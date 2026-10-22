@@ -212,6 +212,7 @@ $('#confirm-remove').addEventListener('click', () => action(async () => { await 
 $('#add-project').addEventListener('click', () => action(() => openPicker()));
 $('#add-current').addEventListener('click', () => action(() => addProject(currentFolder)));
 $('#settings-button').addEventListener('click', about);
+$('#mobile-about').addEventListener('click', about);
 $('#search').addEventListener('input', event => { query = event.target.value; render(); });
 $('#command-select').addEventListener('change', commandFields);
 $('#command-form').addEventListener('input', commandPreview);
