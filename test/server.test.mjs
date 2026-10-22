@@ -1,0 +1,73 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { execFileSync } from 'node:child_process';
+import { createDeck } from '../src/server.mjs';
+import { atomicJSON } from '../src/core.mjs';
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function until(fn) { for (let i = 0; i < 80; i++) { const result = await fn(); if (result) return result; await delay(100); } throw new Error('Timed out waiting for worker.'); }
+
+test('project lifecycle, ordering, background reconnection, stop, security and failure reporting', { timeout: 30000 }, async t => {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-integration-')));
+  const root = path.join(temp, 'Documents'), dataDir = path.join(temp, 'data'); fs.mkdirSync(root);
+  const fake = path.join(temp, 'fake-spar');
+  fs.writeFileSync(fake, `#!${process.execPath}\nif(process.argv[2]==='--version'){console.log('spar test');process.exit(0)}\nconsole.log('started '+process.argv.slice(2).join(' '));\nif(process.argv[2]==='doctor'){console.error('prerequisite missing');process.exit(7)}\nif(process.argv[2]==='review'){console.log('review finished');process.exit(0)}\nif(process.argv[2]==='listen'){const orphan=require('node:child_process').spawn(process.execPath,['-e',\"const fs=require('node:fs');process.on('SIGTERM',()=>{});setInterval(()=>fs.appendFileSync(process.argv[1],'.'),50)\",require('node:path').join(process.cwd(),'child-heartbeat')],{detached:true,stdio:'ignore'});orphan.unref();}\nconst timer=setInterval(()=>console.log('still listening'),100);process.on('SIGINT',()=>{console.log('clean shutdown');clearInterval(timer);process.exit(0)});\n`, { mode: 0o700 });
+  const options = { root, dataDir, binary: fake };
+  let deck, base, token, startedId;
+  const launch = async () => { deck = await createDeck(options); await new Promise(resolve => deck.server.listen(0, '127.0.0.1', resolve)); base = `http://127.0.0.1:${deck.server.address().port}`; token = (await fetch(`${base}/api/state`).then(r => r.json())).token; };
+  const request = async (url, method = 'GET', body, headers = {}) => {
+    const response = await fetch(`${base}${url}`, { method, headers: { 'X-Deck-Token': token, 'Content-Type': 'application/json', ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: response.status, data: await response.json() };
+  };
+  const snapshot = async () => (await request('/api/state')).data;
+  const jobState = async jobId => (await snapshot()).jobs.find(j => j.id === jobId);
+  const close = () => new Promise(resolve => { deck.server.closeAllConnections(); deck.server.close(resolve); });
+  t.after(async () => {
+    if (deck?.server.listening && startedId) await request(`/api/jobs/${startedId}/stop`, 'POST', {}).catch(() => {});
+    if (deck?.server.listening) await close();
+    await delay(200); fs.rmSync(temp, { recursive: true, force: true });
+  });
+  for (const name of ['alpha', 'beta']) { fs.mkdirSync(path.join(root, name)); execFileSync('git', ['init', '-q', path.join(root, name)]); fs.writeFileSync(path.join(root, name, 'spar.toml'), ''); }
+  await launch();
+  assert.equal((await fetch(base)).status, 200);
+  assert.equal((await request('/api/state', 'GET', undefined, { Origin: 'https://untrusted.example' })).status, 403);
+  assert.equal((await request('/api/state', 'GET', undefined, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  const badHost = await new Promise(resolve => { http.get(base + '/api/state', { headers: { Host: 'untrusted.example' } }, res => { res.resume(); resolve(res.statusCode); }); });
+  assert.equal(badHost, 403);
+  assert.equal((await request('/api/projects', 'POST', { path: root }, { 'X-Deck-Token': '' })).status, 403);
+  assert.equal((await request('/api/browse?path=' + encodeURIComponent(temp))).status, 400);
+  const a = (await request('/api/projects', 'POST', { path: path.join(root, 'alpha') })).data;
+  const b = (await request('/api/projects', 'POST', { path: path.join(root, 'beta') })).data;
+  assert.equal((await request('/api/projects', 'POST', { path: a.path })).status, 400);
+  assert.equal((await request('/api/order', 'PUT', { ids: [a.id, a.id] })).status, 400);
+  assert.equal((await request('/api/order', 'PUT', { ids: [b.id, a.id] })).status, 200);
+  const job = (await request('/api/jobs', 'POST', { projectId: a.id, command: 'listen' })).data; startedId = job.id;
+  await until(async () => (await jobState(job.id)).status === 'running');
+  assert.equal((await request('/api/jobs', 'POST', { projectId: a.id, command: 'review' })).status, 409);
+  assert.equal((await request(`/api/projects/${a.id}`, 'DELETE')).status, 409);
+  // The worker survives closure of every HTTP connection and the server itself.
+  await close(); await delay(300); await launch();
+  assert.deepEqual((await snapshot()).projects.map(p => p.id), [b.id, a.id]);
+  assert.equal((await jobState(job.id)).status, 'running');
+  const output = (await request(`/api/jobs/${job.id}/log`)).data.output; assert.match(output, /still listening/);
+  assert.equal((await request(`/api/jobs/${job.id}/stop`, 'POST', {})).status, 200);
+  await until(async () => (await jobState(job.id)).status === 'stopped'); startedId = null;
+  assert.match((await request(`/api/jobs/${job.id}/log`)).data.output, /clean shutdown/);
+  const heartbeat = path.join(root, 'alpha', 'child-heartbeat');
+  const heartbeatSize = fs.statSync(heartbeat).size;
+  await delay(250); assert.equal(fs.statSync(heartbeat).size, heartbeatSize, 'detached descendant must stop writing after Stop');
+  const failure = (await request('/api/jobs', 'POST', { projectId: a.id, command: 'doctor' })).data;
+  await until(async () => (await jobState(failure.id)).status === 'failed'); assert.equal((await jobState(failure.id)).exitCode, 7);
+  const success = (await request('/api/jobs', 'POST', { projectId: b.id, command: 'review', targets: '42' })).data;
+  await until(async () => (await jobState(success.id)).status === 'completed');
+  atomicJSON(path.join(dataDir, 'jobs', success.id, 'status.json'), { status: 'running', heartbeat: Date.now() - 20000 });
+  assert.equal((await jobState(success.id)).status, 'interrupted');
+  assert.equal((await request(`/api/projects/${b.id}`, 'DELETE')).status, 200);
+  assert(fs.existsSync(path.join(root, 'beta', '.git')));
+  assert.equal((await snapshot()).jobs.length, 3);
+  assert.equal((await request('/api/jobs', 'POST', { projectId: a.id, command: 'sh' })).status, 400);
+});

@@ -1,0 +1,16 @@
+{
+  "name": "spar-deck",
+  "version": "1.0.0",
+  "description": "A local command center for your Spar projects.",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "service:install": "node scripts/service.mjs install",
+    "service:uninstall": "node scripts/service.mjs uninstall",
+    "service:status": "node scripts/service.mjs status"
+  },
+  "license": "MIT"
+}

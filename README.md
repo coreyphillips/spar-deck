@@ -1,0 +1,118 @@
+# Spar Deck
+
+A calm, local command center for [Spar](https://github.com/coreyphillips/spar). Bring your repositories onto one deck, start commands with a click, and get your terminal tabs back.
+
+## What it does
+
+- Browse repositories under Documents, including nested project folders.
+- Add project cards, drag them into your preferred order, or use keyboard-accessible move buttons.
+- Start Listen and Review directly from a card.
+- Run check-in, triage, resume, brainstorm, follow-up, split, doctor, initialize, and clean with structured command options.
+- Choose issue or PR numbers, dry runs, limits, and supported command flags.
+- Read live output and previous runs, including exit status and timestamps.
+- Keep runs alive when you close the browser or restart the dashboard server.
+- Save cards, layout, run history, and recent logs on your own computer.
+- Start the dashboard automatically at login with the included macOS service.
+
+There are no runtime npm dependencies, external fonts, analytics, or hosted services. Spar itself continues to use the tools and GitHub authentication already configured on your machine.
+
+## Requirements
+
+- macOS for the login-service installer. The server and process supervisor also work on Linux.
+- Node.js 22 or newer, Git, and Spar on your PATH.
+- Spar's normal prerequisites, including GitHub CLI authentication and the tools selected in each project's `spar.toml`.
+
+## Start
+
+```sh
+git clone https://github.com/coreyphillips/spar-deck.git
+cd spar-deck
+npm start
+```
+
+Open **http://127.0.0.1:4177**. No dependency installation or build step is needed.
+
+Choose **Add project**, browse to a Git repository, and add it. A repository without `spar.toml` gets an **Initialize** button. Initialization preserves existing configuration.
+
+**Listen** runs `spar listen`. **Review** runs `spar review`, which reviews open PRs and posts findings. Use the three-dot command button for specific targets or a dry run. Commands run in the chosen repository and honor its existing Spar configuration.
+
+Only one command can run per project at a time. Stop a listener before starting a manual review on the same project. Different projects can run simultaneously. This prevents commands from competing over Spar's shared state and worktrees.
+
+## Run in the background on macOS
+
+Run this from the permanent checkout location:
+
+```sh
+npm run service:install
+npm run service:status
+```
+
+The installer registers `local.spar-deck` as a LaunchAgent, starts it, and captures the current PATH so tools installed through Homebrew, Cargo, or a Node version manager remain available outside a terminal. It uses the current Node executable. Reinstall the service after moving the checkout or removing that Node version.
+
+The service keeps the web server available while you are signed in and starts it again at login. You can close the browser and terminal. Bookmark the dashboard to return later.
+
+To remove the login service:
+
+```sh
+npm run service:uninstall
+```
+
+Removal preserves your saved data and any active Spar runs. Stop your runs in the dashboard first if you want them ended too.
+
+### What survives
+
+| Event | Saved layout and history | Active commands |
+| --- | --- | --- |
+| Close or reload the browser | Preserved | Continue |
+| Stop or restart the web server | Preserved | Continue independently |
+| Computer sleeps | Preserved | Paused by the OS until wake |
+| Log out or reboot | Preserved | End; restart manually after login |
+
+Commands are deliberately not replayed automatically after a reboot, since some can post comments, push code, or file issues. A lost supervisor is reported as interrupted. If its Spar process is still alive, the card needs attention and blocks another run until that process is stopped.
+
+**Stop run** asks Spar to exit with SIGINT and allows up to 20 seconds for cleanup before forcing termination. Spar can create tool subprocesses in separate process groups, so the supervisor tracks descendants and checks their process identities before terminating them. A command stopped during a write should be inspected before retrying, as with Ctrl-C in a terminal. Unrelated Spar processes started outside the dashboard are not managed by the deck.
+
+## Configuration
+
+Set environment variables before starting or installing the service:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SPAR_DECK_PORT` | `4177` | Loopback HTTP port |
+| `SPAR_DECK_ROOT` | `~/Documents` | Folder the project picker can access |
+| `SPAR_DECK_DATA` | `~/Library/Application Support/Spar Deck` | Persistent dashboard data |
+| `SPAR_BIN` | `spar` | Spar executable path |
+
+```sh
+SPAR_DECK_ROOT="$HOME/projects" SPAR_DECK_PORT=4180 npm start
+```
+
+Use only one web server per data directory. For separate instances, choose separate data directories and ports.
+
+The dashboard binds only to `127.0.0.1`. Host and origin validation, same-origin request tokens, and a restrictive content security policy prevent ordinary remote pages from controlling it. Commands are selected from an allowlist and executed as argument arrays without a shell. Project paths are canonicalized and confined to the configured root. This is a tool for a trusted local desktop account, not a shared or remotely hosted service. Do not expose it through a reverse proxy or tunnel.
+
+## Saved data and logs
+
+- `deck.json`: card order, project metadata, and run records.
+- `jobs/<id>/request.json`: the exact command and working directory.
+- `jobs/<id>/status.json`: process status, heartbeat, exit code, and timestamps.
+- `jobs/<id>/output.log`: current output, rotated at 2 MB with one previous segment retained.
+- `service.log` and `service-error.log`: web-service startup diagnostics.
+
+The output viewer displays the most recent 64 KB. Run history is retained until you remove it from the data folder while the service is stopped. Removing a card never deletes its project files or saved run history. Data files are local to your account and are not included in this repository.
+
+To back up your layout, copy the data directory while the web service and runs are stopped. A malformed data file is reported rather than silently replaced.
+
+## Development and verification
+
+```sh
+npm test
+```
+
+The test suite uses disposable Git repositories and a fake Spar executable. It verifies path confinement, argument validation, host/origin protection, card ordering, run persistence through a web-server restart, duplicate-run prevention, exit reporting, and termination of subprocesses in their own process groups. It does not run reviews or modify remote repositories.
+
+The interface is plain HTML, CSS, and JavaScript in `public/`. The HTTP server and independent run supervisor are in `src/`. Changes to static assets require a browser reload; server changes require a restart.
+
+## License
+
+MIT
