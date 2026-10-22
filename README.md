@@ -2,6 +2,18 @@
 
 A calm, local command center for [Spar](https://github.com/coreyphillips/spar). Bring your repositories onto one deck, start commands with a click, and get your terminal tabs back.
 
+## Screenshots
+
+Keep project cards together, arrange them your way, and start Spar commands from one dashboard.
+
+![Spar Deck dashboard with project cards, Listen and Review buttons, and workspace status](docs/screenshots/dashboard.jpg)
+
+Choose specific pull requests, preview a dry run, and adjust review options before starting a command.
+
+![Spar Deck review options with pull request targets and dry run enabled](docs/screenshots/review-options.jpg)
+
+*Screenshots use example projects.*
+
 ## What it does
 
 - Browse repositories under Documents, including nested project folders.
