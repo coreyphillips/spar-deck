@@ -119,7 +119,7 @@ To back up your layout, copy the data directory while the web service and runs a
 
 A message beginning with `[deck]` comes from the dashboard supervisor. `Could not inspect descendants: spawnSync /bin/ps ETIMEDOUT` in an older run means the operating system process scan exceeded its timeout; it does not mean the Spar command failed.
 
-Process scans run asynchronously so a slow scan does not block output, heartbeats, or stop requests. Failed scans back off up to one minute, repeated warnings are limited to once every five minutes, and recovery is logged. Stop requests still verify process identities before signaling tool subprocesses. If cleanup cannot be verified, the run reports a failure for inspection.
+Process scans run asynchronously so a slow scan does not block output, heartbeats, or stop requests. Failed scans back off up to one minute. Brief outages are retried silently; a warning is logged only when scans keep failing for at least one minute. Warnings are limited to once every five minutes, including across recoveries, and recovery is logged only for an outage that produced a warning. Stop requests still verify process identities before signaling tool subprocesses. If cleanup cannot be verified, the run reports a failure for inspection.
 
 Supervisor updates apply to newly started commands. Existing commands keep their original supervisor until they exit. Stop and restart a listener from its card when convenient to apply an update; restarting only the web service leaves existing supervisors unchanged.
 
