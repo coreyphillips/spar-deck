@@ -115,6 +115,14 @@ The output viewer displays the most recent 64 KB. Run history is retained until 
 
 To back up your layout, copy the data directory while the web service and runs are stopped. A malformed data file is reported rather than silently replaced.
 
+## Process-monitoring warnings
+
+A message beginning with `[deck]` comes from the dashboard supervisor. `Could not inspect descendants: spawnSync /bin/ps ETIMEDOUT` in an older run means the operating system process scan exceeded its timeout; it does not mean the Spar command failed.
+
+Process scans run asynchronously so a slow scan does not block output, heartbeats, or stop requests. Failed scans back off up to one minute, repeated warnings are limited to once every five minutes, and recovery is logged. Stop requests still verify process identities before signaling tool subprocesses. If cleanup cannot be verified, the run reports a failure for inspection.
+
+Supervisor updates apply to newly started commands. Existing commands keep their original supervisor until they exit. Stop and restart a listener from its card when convenient to apply an update; restarting only the web service leaves existing supervisors unchanged.
+
 ## Development and verification
 
 ```sh
