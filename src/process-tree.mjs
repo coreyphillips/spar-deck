@@ -38,8 +38,8 @@ export async function signalVerified(processes, signal) {
   }
 }
 
-export function createProcessMonitor({ readTable = processTableAsync, onTable, onError, onRecovery = () => {}, now = Date.now, intervalMs = 5000, maxBackoffMs = 60000, warningIntervalMs = 300000 }) {
-  let pending, nextAt = 0, failures = 0, lastWarning = -Infinity;
+export function createProcessMonitor({ readTable = processTableAsync, onTable, onError, onRecovery = () => {}, now = Date.now, intervalMs = 5000, maxBackoffMs = 60000, warningDelayMs = 60000, warningIntervalMs = 300000 }) {
+  let pending, nextAt = 0, failures = 0, firstFailureAt, outageWarned = false, lastWarning = -Infinity;
   return {
     poll(force = false) {
       // All callers share one in-flight scan, including a stop request.
@@ -47,15 +47,21 @@ export function createProcessMonitor({ readTable = processTableAsync, onTable, o
       if (!force && now() < nextAt) return Promise.resolve();
       pending = Promise.resolve().then(readTable).then(table => {
         onTable(table);
-        if (failures) onRecovery();
+        if (outageWarned) onRecovery();
         failures = 0;
+        firstFailureAt = undefined;
+        outageWarned = false;
         nextAt = now() + intervalMs;
         return true;
       }).catch(error => {
+        const failedAt = now();
+        firstFailureAt ??= failedAt;
         const retryMs = Math.min(maxBackoffMs, intervalMs * 2 ** Math.min(++failures, 10));
-        nextAt = now() + retryMs;
-        if (now() - lastWarning >= warningIntervalMs) {
-          lastWarning = now();
+        nextAt = failedAt + retryMs;
+        // Ignore brief outages and retain the warning cooldown across recoveries.
+        if (failedAt - firstFailureAt >= warningDelayMs && failedAt - lastWarning >= warningIntervalMs) {
+          lastWarning = failedAt;
+          outageWarned = true;
           onError(error, retryMs);
         }
         return false;
