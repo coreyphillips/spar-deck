@@ -19,6 +19,7 @@ Choose specific pull requests, preview a dry run, and adjust review options befo
 - Browse repositories under Documents, including nested project folders.
 - Add project cards, drag them into your preferred order, or use keyboard-accessible move buttons.
 - Start Listen and Review directly from a card.
+- Edit each project's `spar.toml` with syntax checks and protection against stale saves.
 - Turn a feature request, bug report, or enhancement into an issue and PR with Code.
 - Run check-in, triage, resume, brainstorm, follow-up, split, doctor, initialize, and clean with structured command options.
 - Choose issue or PR numbers, dry runs, limits, and supported command flags.
@@ -27,7 +28,7 @@ Choose specific pull requests, preview a dry run, and adjust review options befo
 - Save cards, layout, run history, and recent logs on your own computer.
 - Start the dashboard automatically at login with the included macOS service.
 
-There are no runtime npm dependencies, external fonts, analytics, or hosted services. Spar itself continues to use the tools and GitHub authentication already configured on your machine.
+The server uses one small TOML parser dependency. There are no external fonts, analytics, or hosted services. Spar itself continues to use the tools and GitHub authentication already configured on your machine.
 
 ## Requirements
 
@@ -41,10 +42,11 @@ There are no runtime npm dependencies, external fonts, analytics, or hosted serv
 ```sh
 git clone https://github.com/coreyphillips/spar-deck.git
 cd spar-deck
+npm ci
 npm start
 ```
 
-Open **http://127.0.0.1:4177**. No dependency installation or build step is needed.
+Open **http://127.0.0.1:4177**. No build step is needed. Run `npm ci` after pulling updates to install the locked dependencies.
 
 Choose **Add project**, browse to a Git repository, and add it. A repository without `spar.toml` gets an **Initialize** button. Initialization preserves existing configuration.
 
@@ -83,6 +85,43 @@ Code requires Spar 0.4.25 or newer. After the release is published, upgrade with
 `cargo install spar-cli --locked`. If you use `SPAR_BIN`, update that executable
 instead. Restart the deck server after updating this checkout, then reload the
 browser. Updating the server leaves active Spar commands running.
+
+## Edit a project's Spar configuration
+
+Click **Edit config** on a project card to open that repository's `spar.toml`.
+The editor shows the full file, including comments, so all Spar options remain
+available. The project name and exact file path appear above the editor.
+
+- **Save config** checks TOML syntax, then writes the edited text atomically.
+  Comments, ordering, and existing file permissions are preserved. Files using
+  CRLF line endings keep that convention. The editor supports UTF-8 files up to
+  64 KB; larger files can still be edited in your usual text editor.
+- **Reload from disk** reads changes made by another editor. If the file changed
+  since you opened it, saving is rejected and your draft stays in the editor.
+  Copy your draft before reloading if you need to combine both versions.
+- Closing or reloading an editor with unsaved changes asks before discarding them.
+  Changes are not autosaved. Browser reloads warn before leaving an unsaved draft.
+- You may inspect or draft changes while a command is active, but saving requires
+  stopping that project's Deck command first. Use **Stop run** inside the editor
+  to keep your draft while it stops. Start the command again to use the saved settings.
+  Stop any Spar command launched outside Deck yourself before changing its config.
+
+For a project without the file, **Add config** opens an empty editor where you can
+paste an existing configuration. Alternatively, **Initialize** generates one using
+Spar. New files are readable and writable only by your account. The editor refuses
+symlinks and special files and writes only `spar.toml` in the selected project root.
+It never commits or pushes configuration changes.
+
+Syntax validation uses [smol-toml](https://github.com/squirrelchat/smol-toml), which
+accepts TOML 1.1. It does not check Spar's schema, option compatibility with your
+installed version, tool availability, or authentication. After saving, choose
+**Doctor** in that project's command options for those checks. Saving does not
+start a Spar command or change the dashboard's own environment settings.
+
+To update an existing installation, pull the latest code, run `npm ci`, restart
+the server, and reload the browser. For the macOS login service, use
+`npm run service:install` from its permanent checkout to restart it. Existing
+Spar runs continue through the server restart.
 
 ## Run in the background on macOS
 
@@ -160,10 +199,11 @@ Supervisor updates apply to newly started commands. Existing commands keep their
 ## Development and verification
 
 ```sh
+npm ci
 npm test
 ```
 
-The test suite uses disposable Git repositories and a fake Spar executable. It verifies path confinement, argument validation, host/origin protection, card ordering, run persistence through a web-server restart, duplicate-run prevention, exit reporting, and termination of subprocesses in their own process groups. It does not run reviews or modify remote repositories.
+The test suite uses disposable Git repositories and a fake Spar executable. It verifies path confinement, argument validation, host/origin protection, card ordering, configuration syntax and stale-save protection, safe configuration file handling, run persistence through a web-server restart, duplicate-run prevention, exit reporting, and termination of subprocesses in their own process groups. It does not run reviews or modify remote repositories.
 
 The interface is plain HTML, CSS, and JavaScript in `public/`. The HTTP server and independent run supervisor are in `src/`. Changes to static assets require a browser reload; server changes require a restart.
 
