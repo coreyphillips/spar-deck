@@ -3,3 +3,20 @@
 /* Keep secondary text readable against the soft workspace surfaces. */
 .card-path,.preview-meta{color:#827b8c;font-size:10px}.branch-row{color:#7f778b;font-size:10px}.config-state{color:#898191;font-size:9px}.preview-command{font-size:10px;color:#786e86}.card-footer{color:#8f849d;font-size:9px}.page-heading p{color:#797481;font-size:13px}.summary-label{color:#807a87;font-size:11px}.background-note p span{color:#89818f}.tab{color:#817789;font-size:12px}.card-actions .button{font-size:11px}.card-path{line-height:1.5}.badge{font-size:10px}.server-status{font-size:10px}.server-status strong{line-height:1.4}.badge.unresponsive{background:#fbefeb;color:#a65d45}
 .mobile-nav{display:none}@media(max-width:650px){.topbar-right{display:none}.mobile-nav{display:flex;gap:5px}.mobile-nav button{border:0;border-radius:5px;background:none;font-size:10px;color:#8b7d9c;padding:7px}.mobile-nav button.selected{background:#eeebf7;color:#725cb0}}
+
+/* Per-project configuration editor. */
+button.config-state{border:0;background:var(--purple-soft);border-radius:5px;padding:5px 7px;color:var(--purple)}
+.config-dialog{width:min(900px,calc(100% - 32px))}
+#config-form{margin:0 27px}
+.config-path{overflow-wrap:anywhere}
+#config-editor{font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;height:34vh;min-height:180px;max-height:50vh;tab-size:2;color:var(--ink);background:#fcfbfe}
+#config-editor:focus-visible{outline:3px solid #b9aef1;outline-offset:2px}
+#config-message{font-size:12px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--green);margin-bottom:15px}
+#config-message.error{color:var(--red)}
+.config-notice{font-size:12px;line-height:1.6;padding:12px;border-radius:7px;background:#fcf2e9;color:#86551e;margin-bottom:15px}
+#config-form .dialog-footer{padding:18px 0;gap:12px;flex-wrap:wrap}
+#config-dirty{margin:0}
+.config-buttons{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:650px){#config-form{margin:0 18px}.config-buttons{width:100%}.config-buttons .button{flex:1}#config-editor{font-size:13px}}
+
+.config-notice .button{margin-left:8px}

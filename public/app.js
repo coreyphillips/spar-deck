@@ -33,6 +33,60 @@ const activeStatuses = new Set(['starting', 'running', 'stopping', 'unresponsive
 let state = { projects: [], jobs: [], commands: {} }, filter = 'all', view = 'projects', query = '', signature = '', connected = false;
 let commandProject, currentFolder, selectedLog, removeId, draggedId, toastTimer, refreshing = false;
 const busyProjects = new Set();
+let configProject, configSnapshot, configBusy = false, configDiscardAction;
+const configDirty = () => configSnapshot && $('#config-editor').value !== configSnapshot.editorContent;
+function configControls() {
+  const running = configProject && isActive(latest(configProject));
+  $('#config-editor').readOnly = configBusy || !configSnapshot;
+  $('#save-config').disabled = configBusy || !configSnapshot || running || !configDirty();
+  $('#reload-config').disabled = configBusy;
+  $('#config-active').hidden = !running;
+  $('#stop-config-run').disabled = configBusy || !running || ['starting', 'stopping'].includes(latest(configProject)?.status);
+  $('#config-dirty').textContent = configDirty() ? 'Unsaved changes' : 'No unsaved changes';
+}
+function configMessage(message, error = false) {
+  $('#config-message').textContent = message;
+  $('#config-message').classList.toggle('error', error);
+}
+async function loadConfig() {
+  configBusy = true; configControls(); configMessage('Loading spar.toml...');
+  try {
+    const result = await api(`/api/projects/${configProject.id}/config`);
+    $('#config-editor').value = result.content;
+    configSnapshot = { ...result, editorContent: $('#config-editor').value };
+    configMessage(result.exists ? 'Loaded the project configuration.' : 'No spar.toml yet. Paste a configuration here, or close and use Initialize to generate one.');
+  } catch (error) { configMessage(error.message, true); }
+  finally { configBusy = false; configControls(); }
+}
+async function openConfig(project) {
+  configProject = project; configSnapshot = null; $('#config-editor').value = '';
+  $('#config-project').textContent = project.name;
+  $('#config-path').textContent = `${project.path}/spar.toml`;
+  $('#config-dialog').showModal(); await loadConfig();
+}
+function discardConfigThen(fn) {
+  if (configBusy) return;
+  if (!configDirty()) return fn();
+  configDiscardAction = fn; $('#discard-config-dialog').showModal();
+}
+function closeDialog(dialog) {
+  if (dialog.id === 'config-dialog') discardConfigThen(() => dialog.close());
+  else dialog.close();
+}
+async function saveConfig() {
+  if (configBusy || !configSnapshot) return;
+  configBusy = true; configControls(); configMessage('Saving spar.toml...');
+  try {
+    let content = $('#config-editor').value;
+    // Textareas normalize line endings. Keep CRLF when the original uses it.
+    if (configSnapshot.content.includes('\r\n') && !configSnapshot.content.replaceAll('\r\n', '').includes('\n')) content = content.replaceAll('\n', '\r\n');
+    const result = await api(`/api/projects/${configProject.id}/config`, 'PUT', { content, revision: configSnapshot.revision });
+    configSnapshot = { ...result, editorContent: $('#config-editor').value };
+    configMessage('Saved. TOML syntax checked. Use Doctor to check Spar settings and installed tools.');
+    await refresh(true);
+  } catch (error) { configMessage(error.message, true); }
+  finally { configBusy = false; configControls(); }
+}
 const latest = project => state.jobs.find(j => j.projectId === project.id);
 const isActive = job => job && activeStatuses.has(job.status);
 const statusLabel = job => !job ? 'Ready' : job.status === 'running' ? job.command === 'listen' ? 'Listening' : 'Working' : ({ completed: 'Completed', stopped: 'Stopped', starting: 'Starting', stopping: 'Stopping', failed: 'Failed', interrupted: 'Interrupted', unresponsive: 'Needs attention' }[job.status] || job.status);
@@ -62,6 +116,7 @@ async function refresh(force = false) {
     const nextSignature = JSON.stringify({ projects: next.projects, jobs: next.jobs.map(({ heartbeat, ...rest }) => rest) });
     if ((force || nextSignature !== signature) && !draggedId) { signature = nextSignature; render(); }
     if ($('#logs-dialog').open && selectedLog) await refreshLog();
+    if ($('#config-dialog').open) configControls();
   } catch (error) {
     connected = false; $('#connection-label').textContent = 'Reconnecting to service'; $('#connection-dot').classList.add('offline');
     $('#footer-status').textContent = 'Service offline. Started runs may still be working.';
@@ -102,7 +157,7 @@ function card(project) {
   const disabled = !connected || !project.available || busy;
   const relativePath = project.path.startsWith(state.root) ? `${state.root.split('/').pop()}${project.path.slice(state.root.length)}` : project.path;
   const tone = [...project.name].reduce((n, c) => n + c.charCodeAt(0), 0) % 5;
-  return `<article class="project-card" data-card="${project.id}"><div class="card-body"><div class="card-top"><span class="project-avatar tone-${tone}">${esc(project.name.slice(0, 2).toUpperCase())}</span><span class="badge ${statusClass}">${status}</span><button class="icon-button grip" draggable="true" data-drag="${project.id}" aria-label="Drag ${esc(project.name)} to reorder" title="Drag to reorder">${icon('grip')}</button></div><h2 class="card-title" title="${esc(project.name)}">${esc(project.name)}</h2><p class="card-path" title="${esc(project.path)}">${esc(relativePath)}</p><div class="branch-row">${icon('branch')}<span>${esc(project.branch || 'folder unavailable')}</span><span class="config-state ${project.configured ? '' : 'needs-setup'}">${icon(project.configured ? 'check' : 'sliders')}${project.configured ? 'Configured' : 'Needs config'}</span></div><div class="run-preview ${running ? 'is-active' : ''}"><div class="preview-command">${icon('terminal')}${job ? esc(`spar ${job.args.join(' ')}`) : 'Ready when you are.'}</div><div class="preview-meta">${job ? `${statusLabel(job)} · ${running ? 'started' : 'updated'} ${relative(job.endedAt || job.createdAt)}` : 'Start listening or choose your next command.'}</div></div><div class="card-actions">${running ? `<button class="button danger" data-action="stop" data-project="${project.id}" ${busy || job.status === 'starting' || job.status === 'stopping' ? 'disabled' : ''}>${icon('stop')}${job.status === 'stopping' ? 'Stopping…' : 'Stop run'}</button>` : `<button class="button listen-button" data-action="${project.configured ? 'listen' : 'init'}" data-project="${project.id}" ${disabled ? 'disabled' : ''}>${icon(project.configured ? 'radio' : 'plus')}${project.configured ? 'Listen' : 'Initialize'}</button>`}<button class="button" data-action="${running ? 'logs' : 'review'}" data-project="${project.id}" ${disabled || (!running && !project.configured) ? 'disabled' : ''}>${icon(running ? 'terminal' : 'review')}${running ? 'Live output' : 'Review'}</button><button class="button more-button" data-action="commands" data-project="${project.id}" aria-label="More commands for ${esc(project.name)}" title="Command options" ${disabled || running ? 'disabled' : ''}>${icon('more')}</button></div></div><div class="card-footer"><button class="text-button" data-action="logs" data-project="${project.id}" ${job ? '' : 'disabled'}>${job ? 'View run history' : 'No runs yet'}${job ? icon('arrow') : ''}</button><div><button class="icon-button" data-action="left" data-project="${project.id}" aria-label="Move ${esc(project.name)} earlier" title="Move earlier">${icon('left')}</button><button class="icon-button" data-action="right" data-project="${project.id}" aria-label="Move ${esc(project.name)} later" title="Move later">${icon('right')}</button><button class="icon-button" data-action="remove" data-project="${project.id}" aria-label="Remove ${esc(project.name)} card" title="Remove card" ${running ? 'disabled' : ''}>${icon('x')}</button></div></div></article>`;
+  return `<article class="project-card" data-card="${project.id}"><div class="card-body"><div class="card-top"><span class="project-avatar tone-${tone}">${esc(project.name.slice(0, 2).toUpperCase())}</span><span class="badge ${statusClass}">${status}</span><button class="icon-button grip" draggable="true" data-drag="${project.id}" aria-label="Drag ${esc(project.name)} to reorder" title="Drag to reorder">${icon('grip')}</button></div><h2 class="card-title" title="${esc(project.name)}">${esc(project.name)}</h2><p class="card-path" title="${esc(project.path)}">${esc(relativePath)}</p><div class="branch-row">${icon('branch')}<span>${esc(project.branch || 'folder unavailable')}</span><button class="config-state ${project.configured ? '' : 'needs-setup'}" data-action="config" data-project="${project.id}" aria-label="Edit configuration for ${esc(project.name)}" title="Edit this project’s spar.toml" ${disabled ? 'disabled' : ''}>${icon('sliders')}${project.configured ? 'Edit config' : 'Add config'}</button></div><div class="run-preview ${running ? 'is-active' : ''}"><div class="preview-command">${icon('terminal')}${job ? esc(`spar ${job.args.join(' ')}`) : 'Ready when you are.'}</div><div class="preview-meta">${job ? `${statusLabel(job)} · ${running ? 'started' : 'updated'} ${relative(job.endedAt || job.createdAt)}` : 'Start listening or choose your next command.'}</div></div><div class="card-actions">${running ? `<button class="button danger" data-action="stop" data-project="${project.id}" ${busy || job.status === 'starting' || job.status === 'stopping' ? 'disabled' : ''}>${icon('stop')}${job.status === 'stopping' ? 'Stopping…' : 'Stop run'}</button>` : `<button class="button listen-button" data-action="${project.configured ? 'listen' : 'init'}" data-project="${project.id}" ${disabled ? 'disabled' : ''}>${icon(project.configured ? 'radio' : 'plus')}${project.configured ? 'Listen' : 'Initialize'}</button>`}<button class="button" data-action="${running ? 'logs' : 'review'}" data-project="${project.id}" ${disabled || (!running && !project.configured) ? 'disabled' : ''}>${icon(running ? 'terminal' : 'review')}${running ? 'Live output' : 'Review'}</button><button class="button more-button" data-action="commands" data-project="${project.id}" aria-label="More commands for ${esc(project.name)}" title="Command options" ${disabled || running ? 'disabled' : ''}>${icon('more')}</button></div></div><div class="card-footer"><button class="text-button" data-action="logs" data-project="${project.id}" ${job ? '' : 'disabled'}>${job ? 'View run history' : 'No runs yet'}${job ? icon('arrow') : ''}</button><div><button class="icon-button" data-action="left" data-project="${project.id}" aria-label="Move ${esc(project.name)} earlier" title="Move earlier">${icon('left')}</button><button class="icon-button" data-action="right" data-project="${project.id}" aria-label="Move ${esc(project.name)} later" title="Move later">${icon('right')}</button><button class="icon-button" data-action="remove" data-project="${project.id}" aria-label="Remove ${esc(project.name)} card" title="Remove card" ${running ? 'disabled' : ''}>${icon('x')}</button></div></div></article>`;
 }
 async function openPicker(directory = state.root) { $('#picker-dialog').showModal(); await browse(directory); }
 async function browse(directory) {
@@ -193,7 +248,7 @@ function about() {
 }
 // Delegation keeps controls working through live status updates.
 document.addEventListener('click', event => {
-  const close = event.target.closest('[data-close]'); if (close) $(`#${close.dataset.close}`).close();
+  const close = event.target.closest('[data-close]'); if (close) closeDialog($(`#${close.dataset.close}`));
   const nav = event.target.closest('[data-view]'); if (nav) { view = nav.dataset.view; render(); }
   const tab = event.target.closest('[data-filter]'); if (tab) { filter = tab.dataset.filter; render(); }
   const folder = event.target.closest('[data-folder]'); if (folder) action(() => browse(folder.dataset.folder));
@@ -206,6 +261,7 @@ document.addEventListener('click', event => {
       case 'add': return openPicker();
       case 'listen': case 'review': case 'init': return run(project, { command: button.dataset.action });
       case 'commands': return openCommand(project);
+      case 'config': return openConfig(project);
       case 'logs': return openLogs(latest(project).id);
       case 'stop': return stop(latest(project));
       case 'remove': removeId = project.id; $('#remove-description').textContent = `${project.name} will leave your dashboard. Its files and saved run history will stay on this Mac.`; return $('#remove-dialog').showModal();
@@ -217,6 +273,13 @@ document.addEventListener('click', event => {
     }
   });
 });
+$('#config-editor').addEventListener('input', configControls);
+$('#config-form').addEventListener('submit', event => { event.preventDefault(); saveConfig(); });
+$('#reload-config').addEventListener('click', () => discardConfigThen(loadConfig));
+$('#stop-config-run').addEventListener('click', () => action(() => stop(latest(configProject))));
+$('#config-dialog').addEventListener('cancel', event => { event.preventDefault(); closeDialog(event.currentTarget); });
+$('#confirm-discard-config').addEventListener('click', () => { $('#discard-config-dialog').close(); configDiscardAction?.(); configDiscardAction = null; });
+window.addEventListener('beforeunload', event => { if ($('#config-dialog').open && configDirty()) { event.preventDefault(); event.returnValue = ''; } });
 $('#confirm-remove').addEventListener('click', () => action(async () => { await api(`/api/projects/${removeId}`, 'DELETE'); $('#remove-dialog').close(); await refresh(true); toast('Card removed. Your project files are untouched.'); }));
 $('#add-project').addEventListener('click', () => action(() => openPicker()));
 $('#add-current').addEventListener('click', () => action(() => addProject(currentFolder)));
@@ -229,7 +292,7 @@ $('#command-form').addEventListener('submit', event => { event.preventDefault();
 $('#log-run-select').addEventListener('change', event => { selectedLog = event.target.value; $('#log-output').textContent = ''; action(refreshLog); });
 $('#stop-log').addEventListener('click', () => action(() => stop(state.jobs.find(j => j.id === selectedLog))));
 $('#copy-log').addEventListener('click', () => action(async () => { await navigator.clipboard.writeText($('#log-output').textContent); toast('Output copied.'); }));
-$$('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close(); } }));
+$$('dialog').forEach(dialog => dialog.addEventListener('click', event => { if (event.target === dialog) { const rect = dialog.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) closeDialog(dialog); } }));
 document.addEventListener('keydown', event => {
   if (event.key === 'k' && (event.metaKey || event.ctrlKey) || event.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) {
     if (!document.querySelector('dialog[open]')) { event.preventDefault(); $('#search').focus(); }

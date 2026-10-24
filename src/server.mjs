@@ -9,6 +9,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ACTIVE, COMMANDS, defaultDataDir, atomicJSON, readJSON, resolveDirectory, buildArgs, id, socketPath, tailFile } from './core.mjs';
 import { processTable } from './process-tree.mjs';
+import { readConfig, writeConfig } from './project-config.mjs';
 const execute = promisify(execFile);
 const source = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(source, '../public');
@@ -49,8 +50,10 @@ export async function createDeck(options = {}) {
   async function snapshot() {
     return { token, root, version, commands: COMMANDS, projects: await Promise.all(state.projects.map(metadata)), jobs: allJobs().reverse(), dataDir };
   }
-  async function body(req) {
-    let chunks = ''; for await (const chunk of req) { chunks += chunk; if (chunks.length > 20000) throw Object.assign(new Error('Request too large.'), { status: 413 }); }
+  async function body(req, limit = 20000) {
+    const buffers = []; let length = 0;
+    for await (const chunk of req) { length += chunk.length; if (length > limit) throw Object.assign(new Error('Request too large.'), { status: 413 }); buffers.push(chunk); }
+    const chunks = Buffer.concat(buffers).toString('utf8');
     try { return JSON.parse(chunks || '{}'); } catch { throw new Error('Invalid JSON.'); }
   }
   function projectById(projectId) {
@@ -115,6 +118,15 @@ export async function createDeck(options = {}) {
         const { ids } = await body(req);
         if (!Array.isArray(ids) || new Set(ids).size !== state.projects.length || ids.length !== state.projects.length || ids.some(value => !state.projects.some(p => p.id === value))) throw new Error('Project list changed. Refresh and try again.');
         state.projects = ids.map(projectById); save(); return reply(res, 200, { ok: true });
+      }
+      const configMatch = url.pathname.match(/^\/api\/projects\/([\w-]+)\/config$/);
+      if (configMatch && ['GET', 'PUT'].includes(req.method)) {
+        const project = projectById(configMatch[1]);
+        if (req.method === 'GET') return reply(res, 200, readConfig(root, project));
+        // JSON escaping can expand a 64 KB document by up to six times.
+        const input = await body(req, 6 * 64 * 1024 + 1024);
+        if (activeJobs(project.id).length) throw Object.assign(new Error('Stop this project’s active command before saving its configuration.'), { status: 409 });
+        return reply(res, 200, writeConfig(root, project, input));
       }
       const projectMatch = url.pathname.match(/^\/api\/projects\/([\w-]+)$/);
       if (req.method === 'DELETE' && projectMatch) {

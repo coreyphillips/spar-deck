@@ -12,5 +12,8 @@
     "service:uninstall": "node scripts/service.mjs uninstall",
     "service:status": "node scripts/service.mjs status"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "smol-toml": "1.9.1"
+  }
 }

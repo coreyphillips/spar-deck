@@ -47,6 +47,12 @@ test('project lifecycle, ordering, background reconnection, stop, security and f
   assert.equal((await request('/api/order', 'PUT', { ids: [b.id, a.id] })).status, 200);
   const job = (await request('/api/jobs', 'POST', { projectId: a.id, command: 'listen' })).data; startedId = job.id;
   await until(async () => (await jobState(job.id)).status === 'running');
+  const config = (await request(`/api/projects/${a.id}/config`)).data;
+  assert.equal(config.content, '', 'active commands still allow reading config');
+  assert.equal((await request(`/api/projects/${a.id}/config`, 'PUT', { content: 'value = 1', revision: config.revision })).status, 409);
+  assert.equal(fs.readFileSync(path.join(a.path, 'spar.toml'), 'utf8'), '');
+  const otherConfig = (await request(`/api/projects/${b.id}/config`)).data;
+  assert.equal((await request(`/api/projects/${b.id}/config`, 'PUT', { content: 'value = 2', revision: otherConfig.revision })).status, 200, 'other projects remain editable');
   assert.equal((await request('/api/jobs', 'POST', { projectId: a.id, command: 'review' })).status, 409);
   assert.equal((await request(`/api/projects/${a.id}`, 'DELETE')).status, 409);
   // The worker survives closure of every HTTP connection and the server itself.
