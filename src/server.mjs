@@ -64,6 +64,11 @@ export async function createDeck(options = {}) {
     const args = buildArgs(input.command, input);
     // Spar commands share state and worktrees. Serializing a project avoids competing runs.
     if (activeJobs(project.id).length) throw Object.assign(new Error('Stop this project’s active command before starting another.'), { status: 409 });
+    if (input.command === 'init' && input.flags?.update === true) {
+      const config = readConfig(root, project);
+      if (!config.exists) throw new Error('Initialize this project before updating its configuration.');
+      if (input.configRevision !== undefined && input.configRevision !== config.revision) throw Object.assign(new Error('spar.toml changed on disk. Reload the file before updating.'), { status: 409 });
+    }
     const job = { id: id(), projectId: project.id, projectName: project.name, command: input.command, args, createdAt: new Date().toISOString() };
     const folder = path.join(dataDir, 'jobs', job.id);
     atomicJSON(path.join(folder, 'request.json'), { cwd: project.path, binary, args });

@@ -16,7 +16,7 @@ export const COMMANDS = {
   followup: { label: 'Follow up', description: 'Work the follow-up queue recorded by Spar.', flags: ['screen-only', 'file-only'] },
   split: { label: 'Split', description: 'Break issues or pull requests into smaller pieces.', numbers: true, dryRun: true },
   doctor: { label: 'Doctor', description: 'Check prerequisites and the project’s configured tools.' },
-  init: { label: 'Initialize', description: 'Create spar.toml. Existing configuration is preserved.' },
+  init: { label: 'Initialize', description: 'Create spar.toml, or append missing options as comments with Update. Existing settings are preserved.', flags: ['update'] },
   clean: { label: 'Clean', description: 'Clean up Spar worktrees and state for completed pull requests.' },
 };
 export const defaultDataDir = () => process.env.SPAR_DECK_DATA || path.join(os.homedir(), 'Library', 'Application Support', 'Spar Deck');

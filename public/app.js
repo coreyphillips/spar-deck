@@ -33,13 +33,16 @@ const activeStatuses = new Set(['starting', 'running', 'stopping', 'unresponsive
 let state = { projects: [], jobs: [], commands: {} }, filter = 'all', view = 'projects', query = '', signature = '', connected = false;
 let commandProject, currentFolder, selectedLog, removeId, draggedId, toastTimer, refreshing = false;
 const busyProjects = new Set();
-let configProject, configSnapshot, configBusy = false, configDiscardAction;
+let configProject, configSnapshot, configBusy = false, configDiscardAction, configUpdateJob, configOutputJob;
 const configDirty = () => configSnapshot && $('#config-editor').value !== configSnapshot.editorContent;
 function configControls() {
   const running = configProject && isActive(latest(configProject));
-  $('#config-editor').readOnly = configBusy || !configSnapshot;
-  $('#save-config').disabled = configBusy || !configSnapshot || running || !configDirty();
-  $('#reload-config').disabled = configBusy;
+  $('#config-editor').readOnly = configBusy || !!configUpdateJob || !configSnapshot;
+  $('#save-config').disabled = configBusy || !!configUpdateJob || !configSnapshot || running || !configDirty();
+  $('#reload-config').disabled = configBusy || !!configUpdateJob;
+  $('#update-config').disabled = configBusy || !!configUpdateJob || !configSnapshot?.exists || running || !!configDirty();
+  $('#update-config').textContent = configUpdateJob ? 'Updating config...' : 'Update config';
+  $('#config-update-output').hidden = !configOutputJob;
   $('#config-active').hidden = !running;
   $('#stop-config-run').disabled = configBusy || !running || ['starting', 'stopping'].includes(latest(configProject)?.status);
   $('#config-dirty').textContent = configDirty() ? 'Unsaved changes' : 'No unsaved changes';
@@ -55,14 +58,39 @@ async function loadConfig() {
     $('#config-editor').value = result.content;
     configSnapshot = { ...result, editorContent: $('#config-editor').value };
     configMessage(result.exists ? 'Loaded the project configuration.' : 'No spar.toml yet. Paste a configuration here, or close and use Initialize to generate one.');
+    return true;
   } catch (error) { configMessage(error.message, true); }
   finally { configBusy = false; configControls(); }
 }
 async function openConfig(project) {
   configProject = project; configSnapshot = null; $('#config-editor').value = '';
+  const update = state.jobs.find(j => j.projectId === project.id && j.command === 'init' && j.args.includes('--update'));
+  configUpdateJob = isActive(update) ? update.id : null; configOutputJob = update?.id;
   $('#config-project').textContent = project.name;
   $('#config-path').textContent = `${project.path}/spar.toml`;
-  $('#config-dialog').showModal(); await loadConfig();
+  $('#config-dialog').showModal();
+  if (configUpdateJob) { configControls(); configMessage('Updating spar.toml. The file will reload when the command finishes.'); }
+  else await loadConfig();
+}
+async function updateConfig() {
+  if (configBusy || configUpdateJob || !configSnapshot?.exists || configDirty()) return;
+  configBusy = true; configControls();
+  try {
+    const job = await api('/api/jobs', 'POST', { projectId: configProject.id, command: 'init', flags: { update: true }, configRevision: configSnapshot.revision });
+    configUpdateJob = job.id; configOutputJob = job.id;
+    configMessage('Updating spar.toml. The file will reload when the command finishes.');
+    await refresh(true);
+  } catch (error) { configMessage(error.message, true); }
+  finally { configBusy = false; configControls(); }
+}
+async function checkConfigUpdate() {
+  if (!configUpdateJob || configBusy) return;
+  const job = state.jobs.find(j => j.id === configUpdateJob);
+  if (!job || isActive(job)) return;
+  configUpdateJob = null;
+  if (job.status === 'completed') {
+    if (await loadConfig()) configMessage('Configuration updated and reloaded. Missing options are added as comments at their defaults.');
+  } else configMessage(`Config update ${statusLabel(job).toLowerCase()}. View update output for details, then reload to inspect the file.`, true);
 }
 function discardConfigThen(fn) {
   if (configBusy) return;
@@ -74,7 +102,7 @@ function closeDialog(dialog) {
   else dialog.close();
 }
 async function saveConfig() {
-  if (configBusy || !configSnapshot) return;
+  if (configBusy || configUpdateJob || !configSnapshot) return;
   configBusy = true; configControls(); configMessage('Saving spar.toml...');
   try {
     let content = $('#config-editor').value;
@@ -116,7 +144,7 @@ async function refresh(force = false) {
     const nextSignature = JSON.stringify({ projects: next.projects, jobs: next.jobs.map(({ heartbeat, ...rest }) => rest) });
     if ((force || nextSignature !== signature) && !draggedId) { signature = nextSignature; render(); }
     if ($('#logs-dialog').open && selectedLog) await refreshLog();
-    if ($('#config-dialog').open) configControls();
+    if ($('#config-dialog').open) { await checkConfigUpdate(); configControls(); }
   } catch (error) {
     connected = false; $('#connection-label').textContent = 'Reconnecting to service'; $('#connection-dot').classList.add('offline');
     $('#footer-status').textContent = 'Service offline. Started runs may still be working.';
@@ -185,7 +213,7 @@ function openCommand(project, command = 'listen') {
 function commandFields() {
   const command = $('#command-select').value, spec = state.commands[command];
   $('#command-description').textContent = spec.description;
-  $('#command-fields').innerHTML = `${spec.numbers ? '<label class="field">Issue or PR numbers <input name="targets" placeholder="All open items, or e.g. 42, 108" autocomplete="off"></label>' : ''}${spec.topic ? '<label class="field">Topic <input name="topic" maxlength="4000" placeholder="What would you like to explore?"></label>' : ''}${spec.prompt ? '<label class="field">Project prompt<textarea name="prompt" rows="6" maxlength="4000" required aria-describedby="code-prompt-help" placeholder="Describe the feature, bug, or enhancement, including expected behavior and constraints."></textarea></label><p id="code-prompt-help" class="help-text">Up to 4,000 characters. Dry run previews the issue; file only creates it without starting implementation.</p>' : ''}${spec.dryRun ? '<label class="checkbox-field"><input type="checkbox" name="dryRun"> Dry run: preview without posting or pushing</label>' : ''}${(spec.flags || []).map(flag => `<label class="checkbox-field"><input type="checkbox" name="flag:${flag}"> ${esc({ once: 'Poll once and exit', verdict: 'Submit a formal approval or change request', recheck: 'Recheck previous findings', 'reply-only': 'Reply without changing code', 'screen-only': 'Screen the queue without writing', 'file-only': 'File issues without implementing' }[flag])}</label>`).join('')}<div class="advanced-options">${!['doctor', 'init', 'clean', 'brainstorm', 'code'].includes(command) ? '<label class="field">Item limit <input name="limit" type="number" min="1" max="999999" placeholder="20 (Spar default)"></label>' : ''}${(spec.valueFlags || []).map(flag => `<label class="field">${esc({ since: 'Look back on first run', 'max-rounds': 'Maximum rounds', ideas: 'Ideas to keep' }[flag])}<input name="flag:${flag}" ${flag === 'since' ? 'placeholder="e.g. 2h"' : 'type="number" min="1" max="999999" placeholder="Use Spar default"'}></label>`).join('')}</div>`;
+  $('#command-fields').innerHTML = `${spec.numbers ? '<label class="field">Issue or PR numbers <input name="targets" placeholder="All open items, or e.g. 42, 108" autocomplete="off"></label>' : ''}${spec.topic ? '<label class="field">Topic <input name="topic" maxlength="4000" placeholder="What would you like to explore?"></label>' : ''}${spec.prompt ? '<label class="field">Project prompt<textarea name="prompt" rows="6" maxlength="4000" required aria-describedby="code-prompt-help" placeholder="Describe the feature, bug, or enhancement, including expected behavior and constraints."></textarea></label><p id="code-prompt-help" class="help-text">Up to 4,000 characters. Dry run previews the issue; file only creates it without starting implementation.</p>' : ''}${spec.dryRun ? '<label class="checkbox-field"><input type="checkbox" name="dryRun"> Dry run: preview without posting or pushing</label>' : ''}${(spec.flags || []).map(flag => `<label class="checkbox-field"><input type="checkbox" name="flag:${flag}"> ${esc({ once: 'Poll once and exit', verdict: 'Submit a formal approval or change request', recheck: 'Recheck previous findings', 'reply-only': 'Reply without changing code', 'screen-only': 'Screen the queue without writing', 'file-only': 'File issues without implementing', update: 'Update config: append missing options as comments' }[flag])}</label>`).join('')}<div class="advanced-options">${!['doctor', 'init', 'clean', 'brainstorm', 'code'].includes(command) ? '<label class="field">Item limit <input name="limit" type="number" min="1" max="999999" placeholder="20 (Spar default)"></label>' : ''}${(spec.valueFlags || []).map(flag => `<label class="field">${esc({ since: 'Look back on first run', 'max-rounds': 'Maximum rounds', ideas: 'Ideas to keep' }[flag])}<input name="flag:${flag}" ${flag === 'since' ? 'placeholder="e.g. 2h"' : 'type="number" min="1" max="999999" placeholder="Use Spar default"'}></label>`).join('')}</div>`;
   commandPreview();
 }
 function commandInput() {
@@ -275,6 +303,8 @@ document.addEventListener('click', event => {
 });
 $('#config-editor').addEventListener('input', configControls);
 $('#config-form').addEventListener('submit', event => { event.preventDefault(); saveConfig(); });
+$('#update-config').addEventListener('click', updateConfig);
+$('#config-update-output').addEventListener('click', () => action(() => openLogs(configOutputJob)));
 $('#reload-config').addEventListener('click', () => discardConfigThen(loadConfig));
 $('#stop-config-run').addEventListener('click', () => action(() => stop(latest(configProject))));
 $('#config-dialog').addEventListener('cancel', event => { event.preventDefault(); closeDialog(event.currentTarget); });

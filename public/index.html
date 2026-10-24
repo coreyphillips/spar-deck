@@ -29,11 +29,11 @@
   <dialog id="config-dialog" class="config-dialog" aria-labelledby="config-title">
     <div class="dialog-heading"><div><div class="eyebrow" id="config-project"></div><h2 id="config-title">Project configuration</h2><p id="config-path" class="config-path"></p></div><button class="icon-button" data-close="config-dialog" aria-label="Close configuration editor"><span data-icon="x"></span></button></div>
     <form id="config-form">
-      <p class="help-text" id="config-help">Edit this project's spar.toml. Save checks TOML syntax. Use Doctor in command options to check Spar settings and installed tools.</p>
-      <p class="config-notice" id="config-active" hidden>A command is active for this project. Stop it before saving. Your draft will stay here. <button class="button small danger" type="button" id="stop-config-run">Stop run</button></p>
+      <p class="help-text" id="config-help">Edit this project's spar.toml. Save checks TOML syntax. Use Doctor in command options to check Spar settings and installed tools. Update config runs spar init --update to append missing options as comments. Save or reload unsaved edits first.</p>
+      <p class="config-notice" id="config-active" hidden>A command is active for this project. Stop it before saving or updating. Your draft will stay here. <button class="button small danger" type="button" id="stop-config-run">Stop run</button></p>
       <label class="field" for="config-editor">spar.toml<textarea id="config-editor" rows="18" spellcheck="false" autocapitalize="off" autocomplete="off" aria-describedby="config-help config-message" placeholder="Paste your TOML configuration here."></textarea></label>
-      <p id="config-message" role="status" aria-live="polite"></p>
-      <div class="dialog-footer"><span id="config-dirty" class="help-text"></span><div class="config-buttons"><button class="button" type="button" id="reload-config">Reload from disk</button><button class="button primary" type="submit" id="save-config">Save config</button></div></div>
+      <p id="config-message" role="status" aria-live="polite"></p><button class="button small" type="button" id="config-update-output" hidden>View update output</button>
+      <div class="dialog-footer"><span id="config-dirty" class="help-text"></span><div class="config-buttons"><button class="button" type="button" id="update-config">Update config</button><button class="button" type="button" id="reload-config">Reload from disk</button><button class="button primary" type="submit" id="save-config">Save config</button></div></div>
     </form>
   </dialog>
   <dialog id="discard-config-dialog" class="confirm-dialog" aria-labelledby="discard-config-title"><div class="dialog-heading"><div><h2 id="discard-config-title">Discard unsaved edits?</h2><p>Your edits to spar.toml have not been saved.</p></div></div><div class="dialog-footer"><button class="button" data-close="discard-config-dialog">Keep editing</button><button class="button danger" id="confirm-discard-config">Discard edits</button></div></dialog>

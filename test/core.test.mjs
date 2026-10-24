@@ -51,3 +51,12 @@ test('code rejects missing prompts and incompatible or unsupported options', () 
   assert.throws(() => buildArgs('review', { prompt }));
   assert.equal(buildArgs('code', { prompt: 'x'.repeat(4000) }).at(-1).length, 4000);
 });
+
+test('initialize allows update without exposing destructive flags or output paths', () => {
+  assert.deepEqual(buildArgs('init', { flags: { update: true } }), ['init', '--update']);
+  assert.deepEqual(buildArgs('init'), ['init']);
+  assert.throws(() => buildArgs('init', { flags: { force: true } }));
+  assert.throws(() => buildArgs('init', { flags: { update: 'true' } }));
+  assert.throws(() => buildArgs('init', { flags: { out: '/tmp/config' } }));
+  assert.throws(() => buildArgs('init', { limit: 1 }));
+});
