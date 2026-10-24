@@ -9,6 +9,7 @@ export const COMMANDS = {
   review: { label: 'Review', description: 'Review open pull requests and post findings. Leave targets blank for all open PRs.', numbers: true, dryRun: true, flags: ['verdict', 'recheck'], valueFlags: ['max-rounds'] },
   checkin: { label: 'Check in', description: 'Answer PR comments and apply agreed changes.', numbers: true, dryRun: true, flags: ['reply-only'] },
   run: { label: 'Run', description: 'Work issues and continue pull requests using this project’s Spar configuration.', numbers: true, flags: [], valueFlags: ['max-rounds'] },
+  code: { label: 'Code', description: 'Turn a project prompt into a detailed issue, then implement and review it as a pull request. Requires Spar 0.4.25 or newer.', prompt: true, dryRun: true, flags: ['file-only'], valueFlags: ['max-rounds'] },
   triage: { label: 'Triage', description: 'Triage open issues and write a local plan.', numbers: true },
   resume: { label: 'Resume', description: 'Continue the implementation and review loop on existing PRs.', numbers: true, valueFlags: ['max-rounds'] },
   brainstorm: { label: 'Brainstorm', description: 'Explore ideas and save the session locally.', topic: true, valueFlags: ['max-rounds', 'ideas'] },
@@ -48,6 +49,10 @@ export function buildArgs(command, input = {}) {
     if (!spec.topic || typeof input.topic !== 'string' || input.topic.length > 4000 || input.topic.startsWith('-') || input.topic.includes('\0')) throw new Error('Enter a topic of up to 4,000 characters that does not start with a dash.');
     args.push(input.topic);
   }
+  if (spec.prompt) {
+    if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 4000 || input.prompt.includes('\0')) throw new Error('Describe what to build, fix, or improve in 1 to 4,000 characters.');
+  } else if (input.prompt !== undefined) throw new Error('This command does not accept a project prompt.');
+  if (input.dryRun && input.flags?.['file-only']) throw new Error('Choose either dry run or file only.');
   if (input.dryRun) { if (!spec.dryRun) throw new Error('This command does not support dry run.'); args.push('--dry-run'); }
   for (const [flag, value] of Object.entries(input.flags || {})) {
     if (value === false || value === '' || value == null) continue;
@@ -59,9 +64,11 @@ export function buildArgs(command, input = {}) {
   }
   if (input.flags?.['screen-only'] && input.flags?.['file-only']) throw new Error('Choose either screen only or file only.');
   if (input.limit) {
-    if (['doctor', 'init', 'clean'].includes(command) || !/^[1-9]\d{0,5}$/.test(String(input.limit))) throw new Error('Invalid item limit.');
+    if (['doctor', 'init', 'clean', 'code'].includes(command) || !/^[1-9]\d{0,5}$/.test(String(input.limit))) throw new Error('Invalid item limit.');
     args.push('--limit', String(input.limit));
   }
+  // End option parsing before the prompt so pasted flags remain request text.
+  if (spec.prompt) args.push('--', input.prompt);
   return args;
 }
 export function socketPath(dataDir, jobId) {
