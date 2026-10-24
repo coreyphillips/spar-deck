@@ -71,3 +71,45 @@ test('project lifecycle, ordering, background reconnection, stop, security and f
   assert.equal((await snapshot()).jobs.length, 3);
   assert.equal((await request('/api/jobs', 'POST', { projectId: a.id, command: 'sh' })).status, 400);
 });
+
+test('code validates requests and preserves prompts through the run supervisor', { timeout: 15000 }, async t => {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-code-')));
+  const root = path.join(temp, 'project'), dataDir = path.join(temp, 'data');
+  fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]);
+  fs.writeFileSync(path.join(root, 'spar.toml'), '');
+  const fake = path.join(temp, 'fake-spar');
+  fs.writeFileSync(fake, `#!${process.execPath}\nconsole.log(JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o700 });
+  const deck = await createDeck({ root, dataDir, binary: fake });
+  t.after(async () => {
+    deck.server.closeAllConnections(); await new Promise(resolve => deck.server.close(resolve));
+    fs.rmSync(temp, { recursive: true, force: true });
+  });
+  await new Promise(resolve => deck.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${deck.server.address().port}`;
+  const snapshot = () => fetch(`${base}/api/state`).then(r => r.json());
+  const state = await snapshot(), token = state.token;
+  assert.equal(state.commands.code.prompt, true);
+  const post = async (url, body) => {
+    const response = await fetch(`${base}${url}`, { method: 'POST', headers: { 'X-Deck-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    return { status: response.status, data: await response.json() };
+  };
+  const { data: project } = await post('/api/projects', { path: root });
+  for (const input of [{}, { prompt: ' ' }, { prompt: 'Add export', dryRun: true, flags: { 'file-only': true } }]) {
+    assert.equal((await post('/api/jobs', { projectId: project.id, command: 'code', ...input })).status, 400);
+  }
+  assert.equal((await snapshot()).jobs.length, 0);
+  const prompt = '--auto-merge\nExport "quoted" rows; $(touch marker)';
+  for (const options of [{}, { dryRun: true }, { flags: { 'file-only': true } }]) {
+    const { status, data: job } = await post('/api/jobs', { projectId: project.id, command: 'code', prompt, ...options });
+    assert.equal(status, 201);
+    await until(async () => (await snapshot()).jobs.find(j => j.id === job.id)?.status === 'completed');
+    const expected = ['code', ...(options.dryRun ? ['--dry-run'] : options.flags ? ['--file-only'] : []), '--', prompt];
+    assert.deepEqual(job.args, expected);
+    const folder = path.join(dataDir, 'jobs', job.id);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(folder, 'request.json'), 'utf8')).args, expected);
+    const output = fs.readFileSync(path.join(folder, 'output.log'), 'utf8');
+    const argumentLine = output.split('\n').find(line => line.startsWith('["code"'));
+    assert.deepEqual(JSON.parse(argumentLine), expected);
+    assert.equal(fs.existsSync(path.join(root, 'marker')), false);
+  }
+});

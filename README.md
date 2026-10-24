@@ -19,6 +19,7 @@ Choose specific pull requests, preview a dry run, and adjust review options befo
 - Browse repositories under Documents, including nested project folders.
 - Add project cards, drag them into your preferred order, or use keyboard-accessible move buttons.
 - Start Listen and Review directly from a card.
+- Turn a feature request, bug report, or enhancement into an issue and PR with Code.
 - Run check-in, triage, resume, brainstorm, follow-up, split, doctor, initialize, and clean with structured command options.
 - Choose issue or PR numbers, dry runs, limits, and supported command flags.
 - Read live output and previous runs, including exit status and timestamps.
@@ -32,6 +33,7 @@ There are no runtime npm dependencies, external fonts, analytics, or hosted serv
 
 - macOS for the login-service installer. The server and process supervisor also work on Linux.
 - Node.js 22 or newer, Git, and Spar on your PATH.
+- Spar 0.4.25 or newer for the Code command. Upgrade Spar after that release is published.
 - Spar's normal prerequisites, including GitHub CLI authentication and the tools selected in each project's `spar.toml`.
 
 ## Start
@@ -49,6 +51,38 @@ Choose **Add project**, browse to a Git repository, and add it. A repository wit
 **Listen** runs `spar listen`. **Review** runs `spar review`, which reviews open PRs and posts findings. Use the three-dot command button for specific targets or a dry run. Commands run in the chosen repository and honor its existing Spar configuration.
 
 Only one command can run per project at a time. Stop a listener before starting a manual review on the same project. Different projects can run simultaneously. This prevents commands from competing over Spar's shared state and worktrees.
+
+## Start work from a prompt
+
+Open a project's three-dot command button and choose **Code**. Describe the
+feature, bug, or enhancement in **Project prompt**, including expected behavior
+and any constraints. The field accepts multiple lines and up to 4,000 characters.
+
+By default, Code runs `spar code` in that project. Spar reads the repository,
+drafts and files one detailed GitHub issue, and passes it through the normal
+triage, implementation, and PR review workflow. Existing project settings apply,
+including its merge policy. Both reviewers still have to agree the work is worth
+doing.
+
+- **Dry run** drafts and displays the issue without filing or implementing it.
+- **File issues without implementing** files the issue and stops.
+- **Maximum rounds** overrides the run's review budget when supplied.
+
+Dry run and file only are mutually exclusive. The command preview shows what
+will run, and live output opens automatically after starting Code so you can
+read the draft, issue URL, and progress. Prompts are passed as a single argument,
+including newlines and shell punctuation. A prompt starting with a dash stays
+request text rather than becoming a command option.
+
+Stop any active command for the project before starting Code. If a run stops
+after filing, use **Run** with the issue number printed in the output to continue.
+Starting Code again files a new issue. Prompts are stored in the local run history
+and job request files alongside the command's other arguments.
+
+Code requires Spar 0.4.25 or newer. After the release is published, upgrade with
+`cargo install spar-cli --locked`. If you use `SPAR_BIN`, update that executable
+instead. Restart the deck server after updating this checkout, then reload the
+browser. Updating the server leaves active Spar commands running.
 
 ## Run in the background on macOS
 

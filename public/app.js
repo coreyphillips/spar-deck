@@ -130,7 +130,7 @@ function openCommand(project, command = 'listen') {
 function commandFields() {
   const command = $('#command-select').value, spec = state.commands[command];
   $('#command-description').textContent = spec.description;
-  $('#command-fields').innerHTML = `${spec.numbers ? '<label class="field">Issue or PR numbers <input name="targets" placeholder="All open items, or e.g. 42, 108" autocomplete="off"></label>' : ''}${spec.topic ? '<label class="field">Topic <input name="topic" maxlength="4000" placeholder="What would you like to explore?"></label>' : ''}${spec.dryRun ? '<label class="checkbox-field"><input type="checkbox" name="dryRun"> Dry run: preview without posting or pushing</label>' : ''}${(spec.flags || []).map(flag => `<label class="checkbox-field"><input type="checkbox" name="flag:${flag}"> ${esc({ once: 'Poll once and exit', verdict: 'Submit a formal approval or change request', recheck: 'Recheck previous findings', 'reply-only': 'Reply without changing code', 'screen-only': 'Screen the queue without writing', 'file-only': 'File issues without implementing' }[flag])}</label>`).join('')}<div class="advanced-options">${!['doctor', 'init', 'clean', 'brainstorm'].includes(command) ? '<label class="field">Item limit <input name="limit" type="number" min="1" max="999999" placeholder="20 (Spar default)"></label>' : ''}${(spec.valueFlags || []).map(flag => `<label class="field">${esc({ since: 'Look back on first run', 'max-rounds': 'Maximum rounds', ideas: 'Ideas to keep' }[flag])}<input name="flag:${flag}" ${flag === 'since' ? 'placeholder="e.g. 2h"' : 'type="number" min="1" max="999999" placeholder="Use Spar default"'}></label>`).join('')}</div>`;
+  $('#command-fields').innerHTML = `${spec.numbers ? '<label class="field">Issue or PR numbers <input name="targets" placeholder="All open items, or e.g. 42, 108" autocomplete="off"></label>' : ''}${spec.topic ? '<label class="field">Topic <input name="topic" maxlength="4000" placeholder="What would you like to explore?"></label>' : ''}${spec.prompt ? '<label class="field">Project prompt<textarea name="prompt" rows="6" maxlength="4000" required aria-describedby="code-prompt-help" placeholder="Describe the feature, bug, or enhancement, including expected behavior and constraints."></textarea></label><p id="code-prompt-help" class="help-text">Up to 4,000 characters. Dry run previews the issue; file only creates it without starting implementation.</p>' : ''}${spec.dryRun ? '<label class="checkbox-field"><input type="checkbox" name="dryRun"> Dry run: preview without posting or pushing</label>' : ''}${(spec.flags || []).map(flag => `<label class="checkbox-field"><input type="checkbox" name="flag:${flag}"> ${esc({ once: 'Poll once and exit', verdict: 'Submit a formal approval or change request', recheck: 'Recheck previous findings', 'reply-only': 'Reply without changing code', 'screen-only': 'Screen the queue without writing', 'file-only': 'File issues without implementing' }[flag])}</label>`).join('')}<div class="advanced-options">${!['doctor', 'init', 'clean', 'brainstorm', 'code'].includes(command) ? '<label class="field">Item limit <input name="limit" type="number" min="1" max="999999" placeholder="20 (Spar default)"></label>' : ''}${(spec.valueFlags || []).map(flag => `<label class="field">${esc({ since: 'Look back on first run', 'max-rounds': 'Maximum rounds', ideas: 'Ideas to keep' }[flag])}<input name="flag:${flag}" ${flag === 'since' ? 'placeholder="e.g. 2h"' : 'type="number" min="1" max="999999" placeholder="Use Spar default"'}></label>`).join('')}</div>`;
   commandPreview();
 }
 function commandInput() {
@@ -142,10 +142,19 @@ function commandInput() {
   }
   return input;
 }
-function commandPreview() {
+function commandPreview(event) {
+  if ($('#command-select').value === 'code') {
+    const form = $('#command-form');
+    const dryRun = form.elements.namedItem('dryRun'), fileOnly = form.elements.namedItem('flag:file-only');
+    if (event?.target === dryRun && dryRun.checked) fileOnly.checked = false;
+    if (event?.target === fileOnly && fileOnly.checked) dryRun.checked = false;
+    const prompt = form.elements.namedItem('prompt');
+    prompt.setCustomValidity(prompt.value.trim() ? '' : 'Describe what to build, fix, or improve.');
+  }
   const input = commandInput();
   const bits = ['spar', input.command, input.targets || '', input.topic ? JSON.stringify(input.topic) : '', input.dryRun ? '--dry-run' : '', input.limit ? `--limit ${input.limit}` : ''];
   for (const [flag, value] of Object.entries(input.flags)) if (value) bits.push(`--${flag}${value === true ? '' : ` ${value}`}`);
+  if (input.prompt) bits.push('--', JSON.stringify(input.prompt));
   $('#command-preview').textContent = bits.filter(Boolean).join(' ');
 }
 async function run(project, input) {
@@ -154,7 +163,7 @@ async function run(project, input) {
   try {
     const job = await api('/api/jobs', 'POST', { projectId: project.id, ...input });
     $('#command-dialog').close(); await refresh(true); toast(`${state.commands[input.command].label} started for ${project.name}.`);
-    if (input.command === 'doctor' || input.command === 'init') await openLogs(job.id);
+    if (['doctor', 'init', 'code'].includes(input.command)) await openLogs(job.id);
   } finally { busyProjects.delete(project.id); render(); }
 }
 async function stop(job) { await api(`/api/jobs/${job.id}/stop`, 'POST', {}); toast('Stop requested. Spar is cleaning up.'); await refresh(true); }

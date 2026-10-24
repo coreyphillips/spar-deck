@@ -31,3 +31,23 @@ test('state is persisted atomically and log tails are bounded', t => {
   fs.writeFileSync(file, '{broken'); assert.throws(() => readJSON(file, {}));
   const log = path.join(temp, 'output.log'); fs.writeFileSync(log, '1234567890'); assert.equal(tailFile(log, 4), '7890'); assert.equal(tailFile(`${log}.missing`), '');
 });
+
+test('code preserves a multiline project prompt after the option separator', () => {
+  const prompt = '--auto-merge\nFix "quoted" exports; $(touch /tmp/should-not-exist)';
+  assert.deepEqual(buildArgs('code', { prompt, dryRun: true, flags: { 'max-rounds': '5' } }), ['code', '--dry-run', '--max-rounds', '5', '--', prompt]);
+  assert.deepEqual(buildArgs('code', { prompt, flags: { 'file-only': true } }), ['code', '--file-only', '--', prompt]);
+  assert.deepEqual(buildArgs('code', { prompt }), ['code', '--', prompt]);
+});
+
+test('code rejects missing prompts and incompatible or unsupported options', () => {
+  for (const prompt of [undefined, null, '', ' \n\t ', 42, ['Add export'], 'x'.repeat(4001), 'bad\0prompt']) {
+    assert.throws(() => buildArgs('code', { prompt }), /Describe what to build/);
+  }
+  const prompt = 'Add CSV export';
+  assert.throws(() => buildArgs('code', { prompt, dryRun: true, flags: { 'file-only': true } }), /either dry run or file only/);
+  assert.throws(() => buildArgs('code', { prompt, targets: '42' }));
+  assert.throws(() => buildArgs('code', { prompt, limit: 5 }));
+  assert.throws(() => buildArgs('code', { prompt, flags: { repo: '/tmp' } }));
+  assert.throws(() => buildArgs('review', { prompt }));
+  assert.equal(buildArgs('code', { prompt: 'x'.repeat(4000) }).at(-1).length, 4000);
+});
