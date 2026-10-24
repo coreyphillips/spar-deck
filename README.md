@@ -96,13 +96,21 @@ available. The project name and exact file path appear above the editor.
   Comments, ordering, and existing file permissions are preserved. Files using
   CRLF line endings keep that convention. The editor supports UTF-8 files up to
   64 KB; larger files can still be edited in your usual text editor.
+- **Update config** runs `spar init --update` in the selected project using your
+  installed Spar version, then reloads the editor after a successful run. It appends
+  missing options as comments with their defaults and descriptions, preserving
+  existing settings. Upgrade Spar first to pick up newly released options. Save or
+  reload unsaved edits before updating, and stop any active command for the project.
+  The file must already exist; use Initialize first if needed. Update progress and
+  failures appear in the editor, with **View update output** for the command log.
+  Updates also appear in run history and continue if you close the editor.
 - **Reload from disk** reads changes made by another editor. If the file changed
   since you opened it, saving is rejected and your draft stays in the editor.
   Copy your draft before reloading if you need to combine both versions.
 - Closing or reloading an editor with unsaved changes asks before discarding them.
   Changes are not autosaved. Browser reloads warn before leaving an unsaved draft.
 - You may inspect or draft changes while a command is active, but saving requires
-  stopping that project's Deck command first. Use **Stop run** inside the editor
+  stopping that project's Deck command first. Updating requires the same. Use **Stop run** inside the editor
   to keep your draft while it stops. Start the command again to use the saved settings.
   Stop any Spar command launched outside Deck yourself before changing its config.
 
@@ -115,7 +123,8 @@ It never commits or pushes configuration changes.
 Syntax validation uses [smol-toml](https://github.com/squirrelchat/smol-toml), which
 accepts TOML 1.1. It does not check Spar's schema, option compatibility with your
 installed version, tool availability, or authentication. After saving, choose
-**Doctor** in that project's command options for those checks. Saving does not
+**Doctor** in that project's command options for those checks. The Update option
+is also available under **Initialize** in command options. Saving does not
 start a Spar command or change the dashboard's own environment settings.
 
 To update an existing installation, pull the latest code, run `npm ci`, restart

@@ -119,3 +119,59 @@ test('code validates requests and preserves prompts through the run supervisor',
     assert.equal(fs.existsSync(path.join(root, 'marker')), false);
   }
 });
+
+test('config update runs in the selected project, preserves settings, and reports failure', { timeout: 15000 }, async t => {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-config-update-')));
+  const root = path.join(temp, 'projects'), dataDir = path.join(temp, 'data'); fs.mkdirSync(root);
+  const fake = path.join(temp, 'fake-spar');
+  fs.writeFileSync(fake, `#!${process.execPath}
+const fs = require('node:fs');
+if (process.argv[2] === '--version') { console.log('spar test'); process.exit(0); }
+if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(['init', '--update'])) process.exit(9);
+const text = fs.readFileSync('spar.toml', 'utf8');
+if (text.includes('fail-update')) { console.error('Configuration could not be parsed'); process.exit(2); }
+setTimeout(() => { fs.appendFileSync('spar.toml', '\\n# New option\\n# max_rounds = 4\\n'); console.log('added missing settings as comments'); }, 300);
+`, { mode: 0o700 });
+  const deck = await createDeck({ root, dataDir, binary: fake });
+  t.after(async () => { deck.server.closeAllConnections(); await new Promise(resolve => deck.server.close(resolve)); fs.rmSync(temp, { recursive: true, force: true }); });
+  await new Promise(resolve => deck.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${deck.server.address().port}`;
+  const token = (await fetch(`${base}/api/state`).then(r => r.json())).token;
+  const request = async (url, method = 'GET', body) => {
+    const response = await fetch(base + url, { method, headers: { 'X-Deck-Token': token, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: response.status, data: await response.json() };
+  };
+  const projects = [];
+  for (const name of ['alpha', 'beta']) {
+    const folder = path.join(root, name); fs.mkdirSync(folder); execFileSync('git', ['init', '-q', folder]);
+    projects.push((await request('/api/projects', 'POST', { path: folder })).data);
+  }
+  const [project, other] = projects, file = path.join(project.path, 'spar.toml');
+  const input = { projectId: project.id, command: 'init', flags: { update: true } };
+  assert.equal((await request('/api/jobs', 'POST', input)).status, 400, 'missing configs need initialization');
+  const original = '# My settings\n[loop]\nmax_rounds = 9\n'; fs.writeFileSync(file, original);
+  let config = (await request(`/api/projects/${project.id}/config`)).data;
+  fs.writeFileSync(file, original + '# Edited elsewhere\n');
+  assert.equal((await request('/api/jobs', 'POST', { ...input, configRevision: config.revision })).status, 409);
+  assert.equal((await request('/api/state')).data.jobs.length, 0);
+  config = (await request(`/api/projects/${project.id}/config`)).data;
+  const { status, data: job } = await request('/api/jobs', 'POST', { ...input, configRevision: config.revision });
+  assert.equal(status, 201); assert.deepEqual(job.args, ['init', '--update']);
+  assert.equal((await request('/api/jobs', 'POST', input)).status, 409, 'serialize config updates with project commands');
+  await until(async () => (await request(`/api/jobs/${job.id}/log`)).data.job.status === 'completed');
+  const updated = (await request(`/api/projects/${project.id}/config`)).data;
+  assert.equal(updated.content, config.content + '\n# New option\n# max_rounds = 4\n');
+  assert.notEqual(updated.revision, config.revision);
+  assert.equal(fs.existsSync(path.join(other.path, 'spar.toml')), false);
+  assert.match((await request(`/api/jobs/${job.id}/log`)).data.output, /added missing settings/);
+  const jobRequest = JSON.parse(fs.readFileSync(path.join(dataDir, 'jobs', job.id, 'request.json'), 'utf8'));
+  assert.equal(jobRequest.cwd, project.path); assert.deepEqual(jobRequest.args, ['init', '--update']);
+  fs.writeFileSync(file, '# fail-update\n');
+  const failure = (await request('/api/jobs', 'POST', input)).data;
+  await until(async () => (await request(`/api/jobs/${failure.id}/log`)).data.job.status === 'failed');
+  assert.match((await request(`/api/jobs/${failure.id}/log`)).data.output, /Configuration could not be parsed/);
+  assert.equal(fs.readFileSync(file, 'utf8'), '# fail-update\n');
+  fs.unlinkSync(file); fs.symlinkSync(path.join(temp, 'outside.toml'), file); fs.writeFileSync(path.join(temp, 'outside.toml'), original);
+  assert.equal((await request('/api/jobs', 'POST', input)).status, 400);
+  assert.equal(fs.readFileSync(path.join(temp, 'outside.toml'), 'utf8'), original);
+});
