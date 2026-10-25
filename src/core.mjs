@@ -8,7 +8,7 @@ export const COMMANDS = {
   listen: { label: 'Listen', description: 'Watch GitHub activity and act on review requests and mentions.', numbers: true, dryRun: true, flags: ['once'], valueFlags: ['since'] },
   review: { label: 'Review', description: 'Review open pull requests and post findings. Leave targets blank for all open PRs.', numbers: true, dryRun: true, flags: ['verdict', 'recheck'], valueFlags: ['max-rounds'] },
   checkin: { label: 'Check in', description: 'Answer PR comments and apply agreed changes.', numbers: true, dryRun: true, flags: ['reply-only'] },
-  run: { label: 'Run', description: 'Work issues and continue pull requests using this project’s Spar configuration.', numbers: true, flags: [], valueFlags: ['max-rounds'] },
+  run: { label: 'Run', description: 'Work issues and continue pull requests using this project’s Spar configuration.', numbers: true, flags: [], valueFlags: ['max-rounds', 'min-number'] },
   code: { label: 'Code', description: 'Turn a project prompt into a detailed issue, then implement and review it as a pull request. Requires Spar 0.4.25 or newer.', prompt: true, dryRun: true, flags: ['file-only'], valueFlags: ['max-rounds'] },
   triage: { label: 'Triage', description: 'Triage open issues and write a local plan.', numbers: true },
   resume: { label: 'Resume', description: 'Continue the implementation and review loop on existing PRs.', numbers: true, valueFlags: ['max-rounds'] },

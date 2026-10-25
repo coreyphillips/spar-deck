@@ -22,7 +22,7 @@ Choose specific pull requests, preview a dry run, and adjust review options befo
 - Edit each project's `spar.toml` with syntax checks and protection against stale saves.
 - Turn a feature request, bug report, or enhancement into an issue and PR with Code.
 - Run check-in, triage, resume, brainstorm, follow-up, split, doctor, initialize, and clean with structured command options.
-- Choose issue or PR numbers, dry runs, limits, and supported command flags.
+- Choose issue or PR numbers, dry runs, limits, a lowest issue number for Run, and supported command flags.
 - Read live output and previous runs, including exit status and timestamps.
 - Keep runs alive when you close the browser or restart the dashboard server.
 - Save cards, layout, run history, and recent logs on your own computer.
