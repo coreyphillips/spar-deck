@@ -60,3 +60,11 @@ test('initialize allows update without exposing destructive flags or output path
   assert.throws(() => buildArgs('init', { flags: { out: '/tmp/config' } }));
   assert.throws(() => buildArgs('init', { limit: 1 }));
 });
+
+test('run accepts a lowest issue number alongside its other options', () => {
+  assert.deepEqual(buildArgs('run', { flags: { 'min-number': '120' } }), ['run', '--min-number', '120']);
+  assert.deepEqual(buildArgs('run', { flags: { 'min-number': '' } }), ['run']);
+  assert.deepEqual(buildArgs('run', { targets: '42, 108', flags: { 'max-rounds': '3', 'min-number': '120' }, limit: '5' }), ['run', '42', '108', '--max-rounds', '3', '--min-number', '120', '--limit', '5']);
+  for (const value of ['0', '-5', '1.5', 'abc', '1234567', 0, -5]) assert.throws(() => buildArgs('run', { flags: { 'min-number': value } }), /Invalid min-number/);
+  assert.throws(() => buildArgs('doctor', { flags: { 'min-number': '120' } }), /Unsupported option: min-number/);
+});
