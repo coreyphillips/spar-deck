@@ -22,7 +22,7 @@ Choose specific pull requests, preview a dry run, and adjust review options befo
 - Edit each project's `spar.toml` with syntax checks and protection against stale saves.
 - Turn a feature request, bug report, or enhancement into an issue and PR with Code.
 - Run check-in, triage, resume, brainstorm, follow-up, split, doctor, initialize, and clean with structured command options.
-- Choose issue or PR numbers, dry runs, limits, a lowest issue number for Run, and supported command flags.
+- Choose issue or PR numbers, dry runs, limits, a lowest issue number, the base branch, the first agent, extra instructions, Resume's next reviewer, and other supported command flags.
 - Read live output and previous runs, including exit status and timestamps.
 - Keep runs alive when you close the browser or restart the dashboard server.
 - Save cards, layout, run history, and recent logs on your own computer.
@@ -85,6 +85,24 @@ Code requires Spar 0.4.25 or newer. After the release is published, upgrade with
 `cargo install spar-cli --locked`. If you use `SPAR_BIN`, update that executable
 instead. Restart the deck server after updating this checkout, then reload the
 browser. Updating the server leaves active Spar commands running.
+
+## Command options
+
+The three-dot command button offers each command's options from `spar <command> --help`.
+Every agent command accepts a base branch, the agent that implements first, and extra
+instructions for this run. Run, Code, Follow up, and Resume can also keep worktrees and
+absorb follow-up waves. Run, Code, and Follow up can retriage or close declined issues.
+Check in, Split, and Brainstorm add their own options. Agent keys are the names under
+`[agents]` in `spar.toml`, such as `claude` or `codex`.
+
+Options that take a path, `--quiet`, `--auto-merge`, `--no-worktrees`, and destructive
+clean or init options are not offered. Run Spar from a terminal for those.
+
+When a PR's head moves after Spar saved its review state, Resume stops and asks for
+`--next <agent>`. Choose **Resume**, enter the PR number, and enter the agent that
+should review the new head in **Next reviewer (agent)**. For example, `1923` and
+`codex` run `spar resume 1923 --next codex`. Spar versions without this option
+reject it with their own error.
 
 ## Edit a project's Spar configuration
 

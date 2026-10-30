@@ -163,6 +163,58 @@ test('run passes a lowest issue number to Spar and rejects invalid values', { ti
   }
 });
 
+test('resume passes a next reviewer and shared options to Spar and rejects invalid values', { timeout: 15000 }, async t => {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-resume-next-')));
+  const root = path.join(temp, 'project'), dataDir = path.join(temp, 'data');
+  fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]);
+  fs.writeFileSync(path.join(root, 'spar.toml'), '');
+  const fake = path.join(temp, 'fake-spar');
+  fs.writeFileSync(fake, `#!${process.execPath}\nconsole.log(JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o700 });
+  const deck = await createDeck({ root, dataDir, binary: fake });
+  t.after(async () => {
+    deck.server.closeAllConnections(); await new Promise(resolve => deck.server.close(resolve));
+    fs.rmSync(temp, { recursive: true, force: true });
+  });
+  await new Promise(resolve => deck.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${deck.server.address().port}`;
+  const snapshot = () => fetch(`${base}/api/state`).then(r => r.json());
+  const token = (await snapshot()).token;
+  const post = async (url, body) => {
+    const response = await fetch(`${base}${url}`, { method: 'POST', headers: { 'X-Deck-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    return { status: response.status, data: await response.json() };
+  };
+  const { data: project } = await post('/api/projects', { path: root });
+  const invalid = [
+    { next: '--repo' }, { next: 'a b' }, { next: true }, { first: '-x' }, { base: '-x' }, { base: 'a..b' }, { base: 'main\n' },
+    { instructions: '-x' }, { instructions: 'bad\0text' }, { instructions: 'x'.repeat(4001) }, { absorb: '0' }, { 'min-number': '-5' },
+    { 'close-skipped': true }, { repo: '/tmp' }, { config: '/tmp/spar.toml' }, { quiet: true }, { 'auto-merge': true },
+  ];
+  for (const flags of invalid) {
+    const { status, data } = await post('/api/jobs', { projectId: project.id, command: 'resume', targets: '1923', flags });
+    assert.equal(status, 400, JSON.stringify(flags)); assert.match(data.error, /Invalid|Unsupported option/);
+  }
+  assert.equal((await post('/api/jobs', { projectId: project.id, command: 'run', flags: { 'close-skipped': true, 'no-close-skipped': true } })).status, 400);
+  assert.equal((await snapshot()).jobs.length, 0);
+  const instructions = 'Keep "public" names; $(touch should-not-exist)';
+  const cases = [
+    [{ targets: '1923', flags: { next: 'codex' } }, ['resume', '1923', '--next', 'codex']],
+    [{ targets: '1923', flags: { next: 'claude', first: 'codex', base: 'release/1.x', instructions, absorb: '2', 'keep-worktrees': true }, limit: '5' },
+      ['resume', '1923', '--next', 'claude', '--first', 'codex', '--base', 'release/1.x', '--instructions', instructions, '--absorb', '2', '--keep-worktrees', '--limit', '5']],
+  ];
+  for (const [options, expected] of cases) {
+    const { status, data: job } = await post('/api/jobs', { projectId: project.id, command: 'resume', ...options });
+    assert.equal(status, 201);
+    await until(async () => (await snapshot()).jobs.find(j => j.id === job.id)?.status === 'completed');
+    assert.deepEqual(job.args, expected);
+    assert.deepEqual((await snapshot()).jobs.find(j => j.id === job.id).args, expected);
+    const folder = path.join(dataDir, 'jobs', job.id);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(folder, 'request.json'), 'utf8')).args, expected);
+    const output = fs.readFileSync(path.join(folder, 'output.log'), 'utf8');
+    assert.deepEqual(JSON.parse(output.split('\n').find(line => line.startsWith('["resume"'))), expected);
+  }
+  assert.equal(fs.existsSync(path.join(root, 'should-not-exist')), false);
+});
+
 test('config update runs in the selected project, preserves settings, and reports failure', { timeout: 15000 }, async t => {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-config-update-')));
   const root = path.join(temp, 'projects'), dataDir = path.join(temp, 'data'); fs.mkdirSync(root);
