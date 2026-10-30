@@ -68,3 +68,67 @@ test('run accepts a lowest issue number alongside its other options', () => {
   for (const value of ['0', '-5', '1.5', 'abc', '1234567', 0, -5]) assert.throws(() => buildArgs('run', { flags: { 'min-number': value } }), /Invalid min-number/);
   assert.throws(() => buildArgs('doctor', { flags: { 'min-number': '120' } }), /Unsupported option: min-number/);
 });
+
+test('resume chooses the next reviewer and accepts the shared agent options', () => {
+  assert.deepEqual(buildArgs('resume', { targets: '1923', flags: { next: 'codex' } }), ['resume', '1923', '--next', 'codex']);
+  const instructions = 'Keep the "public" API; $(touch /tmp/should-not-exist)\n-- stay small';
+  assert.deepEqual(buildArgs('resume', { targets: '#1923', flags: { next: 'claude_2', first: 'codex', base: 'release/1.x', instructions, 'min-number': '100', absorb: '2', 'keep-worktrees': true }, limit: '3' }),
+    ['resume', '1923', '--next', 'claude_2', '--first', 'codex', '--base', 'release/1.x', '--instructions', instructions, '--min-number', '100', '--absorb', '2', '--keep-worktrees', '--limit', '3']);
+  assert.deepEqual(buildArgs('resume', { flags: { next: '', first: null, base: false, instructions: '' } }), ['resume']);
+  assert.equal(buildArgs('listen', { flags: { instructions: 'x'.repeat(4000) } }).at(-1).length, 4000);
+  for (const command of ['run', 'code', 'followup', 'triage', 'resume', 'checkin', 'review', 'brainstorm', 'split', 'listen']) {
+    const input = { flags: { first: 'claude', base: 'main', instructions: 'Be brief.' }, ...(command === 'code' ? { prompt: 'Add export' } : {}) };
+    assert.deepEqual(buildArgs(command, input).slice(1, 7), ['--first', 'claude', '--base', 'main', '--instructions', 'Be brief.']);
+  }
+  for (const command of ['doctor', 'init', 'clean']) for (const flag of ['first', 'base', 'instructions']) assert.throws(() => buildArgs(command, { flags: { [flag]: 'main' } }), new RegExp(`Unsupported option: ${flag}`));
+  for (const command of ['run', 'review', 'listen']) assert.throws(() => buildArgs(command, { flags: { next: 'codex' } }), /Unsupported option: next/);
+});
+
+test('agent keys, branches, instructions, and numbers are validated', () => {
+  for (const next of ['--repo', '-x', 'a b', 'codex\n', ' codex', 'a.b', 'a/b', 'x'.repeat(65), 'bad\0key', true, 42, ['codex']]) {
+    assert.throws(() => buildArgs('resume', { flags: { next } }), /Invalid next/);
+    assert.throws(() => buildArgs('run', { flags: { first: next } }), /Invalid first/);
+  }
+  assert.deepEqual(buildArgs('run', { flags: { first: 'x'.repeat(64) } }), ['run', '--first', 'x'.repeat(64)]);
+  for (const base of ['-x', '--repo', 'a..b', 'a b', 'main\t', 'main\n', 'ma\0in', 'a~b', 'a:b', 'x'.repeat(256), true, 7]) assert.throws(() => buildArgs('review', { flags: { base } }), /Invalid base/);
+  assert.equal(buildArgs('review', { flags: { base: 'x'.repeat(255) } }).at(-1).length, 255);
+  for (const instructions of ['-x', '--repo /tmp', 'bad\0text', 'x'.repeat(4001), true, ['Be brief.']]) assert.throws(() => buildArgs('triage', { flags: { instructions } }), /Invalid instructions/);
+  for (const flag of ['absorb', 'min-number', 'max-rounds']) for (const value of ['0', '-5', '1.5', 'abc', '1234567', 0, true]) assert.throws(() => buildArgs('resume', { flags: { [flag]: value } }), new RegExp(`Invalid ${flag}`));
+});
+
+test('new boolean options are offered only for their commands', () => {
+  const allowed = {
+    'keep-worktrees': ['resume', 'run', 'code', 'followup', 'checkin'],
+    retriage: ['run', 'code', 'followup'],
+    'close-skipped': ['run', 'code', 'followup'],
+    'no-close-skipped': ['run', 'code', 'followup'],
+    'any-author': ['checkin'],
+    again: ['checkin', 'split'],
+    'file-issues': ['brainstorm'],
+  };
+  const commands = ['listen', 'review', 'checkin', 'run', 'code', 'triage', 'resume', 'brainstorm', 'followup', 'split', 'doctor', 'init', 'clean'];
+  for (const [flag, list] of Object.entries(allowed)) for (const command of commands) {
+    const input = { flags: { [flag]: true }, ...(command === 'code' ? { prompt: 'Add export' } : {}) };
+    if (list.includes(command)) assert.equal(buildArgs(command, input)[1], `--${flag}`, `${command} --${flag}`);
+    else assert.throws(() => buildArgs(command, input), new RegExp(`Unsupported option: ${flag}`), `${command} --${flag}`);
+    if (list.includes(command)) assert.throws(() => buildArgs(command, { ...input, flags: { [flag]: 'yes' } }), new RegExp(`Unsupported option: ${flag}`));
+  }
+  const valueAllowed = { 'min-number': ['listen', 'review', 'checkin', 'run', 'triage', 'resume', 'split'], absorb: ['run', 'code', 'resume', 'followup'], 'max-rounds': ['review', 'run', 'code', 'resume', 'brainstorm', 'followup'] };
+  for (const [flag, list] of Object.entries(valueAllowed)) for (const command of commands) {
+    const input = { flags: { [flag]: '2' }, ...(command === 'code' ? { prompt: 'Add export' } : {}) };
+    if (list.includes(command)) assert.deepEqual(buildArgs(command, input).slice(1, 3), [`--${flag}`, '2']);
+    else assert.throws(() => buildArgs(command, input), new RegExp(`Unsupported option: ${flag}`), `${command} --${flag}`);
+  }
+});
+
+test('close skipped choices are exclusive and excluded flags stay unavailable', () => {
+  for (const command of ['run', 'followup']) {
+    assert.throws(() => buildArgs(command, { flags: { 'close-skipped': true, 'no-close-skipped': true } }), /either close skipped/);
+    assert.deepEqual(buildArgs(command, { flags: { 'close-skipped': true, 'no-close-skipped': false } }), [command, '--close-skipped']);
+  }
+  assert.throws(() => buildArgs('code', { prompt: 'Add export', flags: { 'close-skipped': true, 'no-close-skipped': true } }), /either close skipped/);
+  const excluded = { repo: '/tmp', config: '/tmp/spar.toml', out: '/tmp/out', 'plan-out': '/tmp/plan.json', file: '/tmp/queue', from: '/tmp/session', force: true, quiet: true, 'auto-merge': true, 'no-worktrees': true, all: true, 'pr-state': true };
+  for (const command of ['listen', 'review', 'checkin', 'run', 'code', 'triage', 'resume', 'brainstorm', 'followup', 'split', 'doctor', 'init', 'clean']) {
+    for (const [flag, value] of Object.entries(excluded)) assert.throws(() => buildArgs(command, { prompt: command === 'code' ? 'Add export' : undefined, flags: { [flag]: value } }), new RegExp(`Unsupported option: ${flag}`), `${command} --${flag}`);
+  }
+});

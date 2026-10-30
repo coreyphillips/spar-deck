@@ -4,17 +4,20 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 
 export const ACTIVE = new Set(['starting', 'running', 'stopping', 'unresponsive']);
+// Options every agent command accepts. Path options, --quiet, and options that merge or bypass worktrees stay off every list.
+const AGENT = ['first', 'base', 'instructions'];
+const LOOP = ['keep-worktrees', 'retriage', 'close-skipped', 'no-close-skipped'];
 export const COMMANDS = {
-  listen: { label: 'Listen', description: 'Watch GitHub activity and act on review requests and mentions.', numbers: true, dryRun: true, flags: ['once'], valueFlags: ['since'] },
-  review: { label: 'Review', description: 'Review open pull requests and post findings. Leave targets blank for all open PRs.', numbers: true, dryRun: true, flags: ['verdict', 'recheck'], valueFlags: ['max-rounds'] },
-  checkin: { label: 'Check in', description: 'Answer PR comments and apply agreed changes.', numbers: true, dryRun: true, flags: ['reply-only'] },
-  run: { label: 'Run', description: 'Work issues and continue pull requests using this project’s Spar configuration.', numbers: true, flags: [], valueFlags: ['max-rounds', 'min-number'] },
-  code: { label: 'Code', description: 'Turn a project prompt into a detailed issue, then implement and review it as a pull request. Requires Spar 0.4.25 or newer.', prompt: true, dryRun: true, flags: ['file-only'], valueFlags: ['max-rounds'] },
-  triage: { label: 'Triage', description: 'Triage open issues and write a local plan.', numbers: true },
-  resume: { label: 'Resume', description: 'Continue the implementation and review loop on existing PRs.', numbers: true, valueFlags: ['max-rounds'] },
-  brainstorm: { label: 'Brainstorm', description: 'Explore ideas and save the session locally.', topic: true, valueFlags: ['max-rounds', 'ideas'] },
-  followup: { label: 'Follow up', description: 'Work the follow-up queue recorded by Spar.', flags: ['screen-only', 'file-only'] },
-  split: { label: 'Split', description: 'Break issues or pull requests into smaller pieces.', numbers: true, dryRun: true },
+  listen: { label: 'Listen', description: 'Watch GitHub activity and act on review requests and mentions.', numbers: true, dryRun: true, flags: ['once'], valueFlags: ['since', 'min-number', ...AGENT] },
+  review: { label: 'Review', description: 'Review open pull requests and post findings. Leave targets blank for all open PRs.', numbers: true, dryRun: true, flags: ['verdict', 'recheck'], valueFlags: ['max-rounds', 'min-number', ...AGENT] },
+  checkin: { label: 'Check in', description: 'Answer PR comments and apply agreed changes.', numbers: true, dryRun: true, flags: ['reply-only', 'any-author', 'again', 'keep-worktrees'], valueFlags: ['min-number', ...AGENT] },
+  run: { label: 'Run', description: 'Work issues and continue pull requests using this project’s Spar configuration.', numbers: true, flags: [...LOOP], valueFlags: ['max-rounds', 'min-number', 'absorb', ...AGENT] },
+  code: { label: 'Code', description: 'Turn a project prompt into a detailed issue, then implement and review it as a pull request. Requires Spar 0.4.25 or newer.', prompt: true, dryRun: true, flags: ['file-only', ...LOOP], valueFlags: ['max-rounds', 'absorb', ...AGENT] },
+  triage: { label: 'Triage', description: 'Triage open issues and write a local plan.', numbers: true, valueFlags: ['min-number', ...AGENT] },
+  resume: { label: 'Resume', description: 'Continue the implementation and review loop on existing PRs.', numbers: true, flags: ['keep-worktrees'], valueFlags: ['next', 'max-rounds', 'min-number', 'absorb', ...AGENT] },
+  brainstorm: { label: 'Brainstorm', description: 'Explore ideas and save the session locally.', topic: true, flags: ['file-issues'], valueFlags: ['max-rounds', 'ideas', ...AGENT] },
+  followup: { label: 'Follow up', description: 'Work the follow-up queue recorded by Spar.', flags: ['screen-only', 'file-only', ...LOOP], valueFlags: ['max-rounds', 'absorb', ...AGENT] },
+  split: { label: 'Split', description: 'Break issues or pull requests into smaller pieces.', numbers: true, dryRun: true, flags: ['again'], valueFlags: ['min-number', ...AGENT] },
   doctor: { label: 'Doctor', description: 'Check prerequisites and the project’s configured tools.' },
   init: { label: 'Initialize', description: 'Create spar.toml, or append missing options as comments with Update. Existing settings are preserved.', flags: ['update'] },
   clean: { label: 'Clean', description: 'Clean up Spar worktrees and state for completed pull requests.' },
@@ -37,6 +40,16 @@ export function resolveDirectory(root, input = root) {
   if (!inside(root, resolved) || !fs.statSync(resolved).isDirectory()) throw new Error('Choose a folder inside your configured project root.');
   return resolved;
 }
+const integer = { test: value => /^[1-9]\d{0,5}$/.test(String(value)), hint: 'Use a whole number from 1 to 999999.' };
+// Text values must arrive as strings so that true or an array cannot pass as a word.
+const agent = { test: value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value), hint: 'Use an agent key from spar.toml, such as codex.' };
+const VALUE_RULES = {
+  since: { test: value => /^\d+[smhd]$/.test(String(value)), hint: 'Use a duration such as 2h.' },
+  'max-rounds': integer, 'min-number': integer, ideas: integer, absorb: integer,
+  first: agent, next: agent,
+  base: { test: value => typeof value === 'string' && /^[A-Za-z0-9._/][A-Za-z0-9._/-]{0,254}$/.test(value) && !value.includes('..'), hint: 'Use a branch name without spaces, "..", or a leading dash.' },
+  instructions: { test: value => typeof value === 'string' && value.length <= 4000 && !value.startsWith('-') && !value.includes('\0'), hint: 'Use up to 4,000 characters that do not start with a dash.' },
+};
 export function buildArgs(command, input = {}) {
   if (!Object.hasOwn(COMMANDS, command)) throw new Error('Unknown Spar command.');
   const spec = COMMANDS[command];
@@ -58,11 +71,12 @@ export function buildArgs(command, input = {}) {
     if (value === false || value === '' || value == null) continue;
     if (spec.flags?.includes(flag) && value === true) args.push(`--${flag}`);
     else if (spec.valueFlags?.includes(flag)) {
-      if (flag === 'since' ? !/^\d+[smhd]$/.test(String(value)) : !/^[1-9]\d{0,5}$/.test(String(value))) throw new Error(`Invalid ${flag}.`);
+      if (!VALUE_RULES[flag].test(value)) throw new Error(`Invalid ${flag}. ${VALUE_RULES[flag].hint}`);
       args.push(`--${flag}`, String(value));
     } else throw new Error(`Unsupported option: ${flag}`);
   }
   if (input.flags?.['screen-only'] && input.flags?.['file-only']) throw new Error('Choose either screen only or file only.');
+  if (input.flags?.['close-skipped'] && input.flags?.['no-close-skipped']) throw new Error('Choose either close skipped issues or leave them open.');
   if (input.limit) {
     if (['doctor', 'init', 'clean', 'code'].includes(command) || !/^[1-9]\d{0,5}$/.test(String(input.limit))) throw new Error('Invalid item limit.');
     args.push('--limit', String(input.limit));

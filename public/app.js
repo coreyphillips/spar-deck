@@ -210,33 +210,77 @@ function openCommand(project, command = 'listen') {
   $('#command-select').innerHTML = Object.entries(state.commands).map(([key, spec]) => `<option value="${key}">${esc(spec.label)}</option>`).join('');
   $('#command-select').value = command; commandFields(); $('#command-dialog').showModal();
 }
+const NUMBER = 'type="number" min="1" max="999999"';
+const AGENT_KEY = 'maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]{0,63}" title="An agent key from spar.toml, such as codex" autocomplete="off" spellcheck="false"';
+// Labels for command flags. A "command:flag" entry overrides the shared label where a flag means something different.
+const FLAG_FIELDS = {
+  once: { label: 'Poll once and exit' },
+  verdict: { label: 'Submit a formal approval or change request' },
+  recheck: { label: 'Recheck previous findings' },
+  'reply-only': { label: 'Reply without changing code' },
+  'screen-only': { label: 'Screen the queue without writing' },
+  'file-only': { label: 'File issues without implementing' },
+  update: { label: 'Update config: append missing options as comments' },
+  'keep-worktrees': { label: 'Keep worktrees afterwards for inspection' },
+  retriage: { label: 'Retriage issues a previous triage disagreed on' },
+  'close-skipped': { label: 'Close issues both agents declined' },
+  'no-close-skipped': { label: 'Leave declined issues open with a comment' },
+  'any-author': { label: 'Act on comments from anyone, not only collaborators' },
+  again: { label: 'Answer comments Spar already answered' },
+  'split:again': { label: 'Start a separate split even when one is recorded' },
+  'file-issues': { label: 'File kept ideas as issues' },
+  since: { label: 'Look back on first run', attrs: 'placeholder="e.g. 2h"' },
+  'max-rounds': { label: 'Maximum rounds', attrs: `${NUMBER} placeholder="Use Spar default"` },
+  ideas: { label: 'Ideas to keep', attrs: `${NUMBER} placeholder="Use Spar default"` },
+  'min-number': { label: 'Lowest issue or PR number', attrs: `${NUMBER} placeholder="Use spar.toml setting"`, help: 'Lower numbers are skipped only when Spar picks items itself. Issue or PR numbers you enter are always worked.' },
+  absorb: { label: 'Follow-up waves to absorb', attrs: `${NUMBER} placeholder="Use Spar default"` },
+  next: { label: 'Next reviewer (agent)', attrs: `${AGENT_KEY} placeholder="Use saved custody, or e.g. codex"`, main: true, help: 'Overrides saved custody after a PR head changed since Spar saved its review state. Enter the PR number above to apply it to that PR only.' },
+  first: { label: 'First implementer (agent)', attrs: `${AGENT_KEY} placeholder="Use spar.toml setting"` },
+  base: { label: 'Base branch', attrs: 'maxlength="255" pattern="(?!.*\\.\\.)[A-Za-z0-9._\\/][A-Za-z0-9._\\/\\-]{0,254}" title="A branch name without spaces, &quot;..&quot;, or a leading dash" autocomplete="off" spellcheck="false" placeholder="Repository default"' },
+  instructions: { label: 'Extra instructions for both agents', attrs: 'rows="3" maxlength="4000" placeholder="Added to the configured instructions for this run only"', textarea: true },
+};
+const flagField = (command, flag) => FLAG_FIELDS[`${command}:${flag}`] || FLAG_FIELDS[flag];
+function valueField(command, flag) {
+  const field = flagField(command, flag), attrs = `name="flag:${flag}" ${field.attrs}${field.help ? ` aria-describedby="${flag}-help"` : ''}`;
+  return `<label class="field${field.textarea ? ' wide' : ''}">${esc(field.label)}${field.textarea ? `<textarea ${attrs}></textarea>` : `<input ${attrs}>`}</label>`;
+}
+const flagHelp = (command, flag) => flagField(command, flag).help ? `<p id="${flag}-help" class="help-text">${esc(flagField(command, flag).help)}</p>` : '';
 function commandFields() {
   const command = $('#command-select').value, spec = state.commands[command];
+  const main = (spec.valueFlags || []).filter(flag => flagField(command, flag).main), advanced = (spec.valueFlags || []).filter(flag => !main.includes(flag));
   $('#command-description').textContent = spec.description;
-  $('#command-fields').innerHTML = `${spec.numbers ? '<label class="field">Issue or PR numbers <input name="targets" placeholder="All open items, or e.g. 42, 108" autocomplete="off"></label>' : ''}${spec.topic ? '<label class="field">Topic <input name="topic" maxlength="4000" placeholder="What would you like to explore?"></label>' : ''}${spec.prompt ? '<label class="field">Project prompt<textarea name="prompt" rows="6" maxlength="4000" required aria-describedby="code-prompt-help" placeholder="Describe the feature, bug, or enhancement, including expected behavior and constraints."></textarea></label><p id="code-prompt-help" class="help-text">Up to 4,000 characters. Dry run previews the issue; file only creates it without starting implementation.</p>' : ''}${spec.dryRun ? '<label class="checkbox-field"><input type="checkbox" name="dryRun"> Dry run: preview without posting or pushing</label>' : ''}${(spec.flags || []).map(flag => `<label class="checkbox-field"><input type="checkbox" name="flag:${flag}"> ${esc({ once: 'Poll once and exit', verdict: 'Submit a formal approval or change request', recheck: 'Recheck previous findings', 'reply-only': 'Reply without changing code', 'screen-only': 'Screen the queue without writing', 'file-only': 'File issues without implementing', update: 'Update config: append missing options as comments' }[flag])}</label>`).join('')}<div class="advanced-options">${!['doctor', 'init', 'clean', 'brainstorm', 'code'].includes(command) ? '<label class="field">Item limit <input name="limit" type="number" min="1" max="999999" placeholder="20 (Spar default)"></label>' : ''}${(spec.valueFlags || []).map(flag => `<label class="field">${esc({ since: 'Look back on first run', 'max-rounds': 'Maximum rounds', ideas: 'Ideas to keep', 'min-number': 'Lowest issue or PR number' }[flag])}<input name="flag:${flag}" ${flag === 'since' ? 'placeholder="e.g. 2h"' : flag === 'min-number' ? 'type="number" min="1" max="999999" placeholder="Use spar.toml setting" aria-describedby="min-number-help"' : 'type="number" min="1" max="999999" placeholder="Use Spar default"'}></label>`).join('')}</div>${spec.valueFlags?.includes('min-number') ? '<p id="min-number-help" class="help-text">Lower numbers are skipped only when Spar picks items itself. Issue or PR numbers you enter are always worked.</p>' : ''}`;
+  $('#command-fields').innerHTML = `${spec.numbers ? '<label class="field">Issue or PR numbers <input name="targets" placeholder="All open items, or e.g. 42, 108" autocomplete="off"></label>' : ''}${main.map(flag => valueField(command, flag) + flagHelp(command, flag)).join('')}${spec.topic ? '<label class="field">Topic <input name="topic" maxlength="4000" placeholder="What would you like to explore?"></label>' : ''}${spec.prompt ? '<label class="field">Project prompt<textarea name="prompt" rows="6" maxlength="4000" required aria-describedby="code-prompt-help" placeholder="Describe the feature, bug, or enhancement, including expected behavior and constraints."></textarea></label><p id="code-prompt-help" class="help-text">Up to 4,000 characters. Dry run previews the issue; file only creates it without starting implementation.</p>' : ''}${spec.dryRun ? '<label class="checkbox-field"><input type="checkbox" name="dryRun"> Dry run: preview without posting or pushing</label>' : ''}`
+    + (spec.flags || []).map(flag => `<label class="checkbox-field"><input type="checkbox" name="flag:${flag}"> ${esc(flagField(command, flag).label)}</label>`).join('')
+    + `<div class="advanced-options">${!['doctor', 'init', 'clean', 'brainstorm', 'code'].includes(command) ? '<label class="field">Item limit <input name="limit" type="number" min="1" max="999999" placeholder="20 (Spar default)"></label>' : ''}${advanced.map(flag => valueField(command, flag)).join('')}</div>${advanced.map(flag => flagHelp(command, flag)).join('')}`;
   commandPreview();
 }
 function commandInput() {
-  const data = new FormData($('#command-form')); const input = { command: data.get('command'), flags: {} };
+  const form = $('#command-form'), data = new FormData(form); const input = { command: data.get('command'), flags: {} };
   for (const [key, value] of data.entries()) {
-    if (key.startsWith('flag:')) input.flags[key.slice(5)] = value === 'on' ? true : value;
+    // FormData only lists checked boxes, and a typed value such as "on" must stay text.
+    if (key.startsWith('flag:')) input.flags[key.slice(5)] = form.elements.namedItem(key).type === 'checkbox' ? true : value;
     else if (key === 'dryRun') input.dryRun = true;
     else if (value) input[key] = value;
   }
   return input;
 }
+// Options Spar rejects together. Checking one clears the other.
+const EXCLUSIVE = [['dryRun', 'flag:file-only'], ['flag:screen-only', 'flag:file-only'], ['flag:close-skipped', 'flag:no-close-skipped']];
 function commandPreview(event) {
+  const form = $('#command-form');
+  for (const pair of EXCLUSIVE) {
+    const [a, b] = pair.map(name => form.elements.namedItem(name));
+    if (a && b && event?.target === a && a.checked) b.checked = false;
+    if (a && b && event?.target === b && b.checked) a.checked = false;
+  }
   if ($('#command-select').value === 'code') {
-    const form = $('#command-form');
-    const dryRun = form.elements.namedItem('dryRun'), fileOnly = form.elements.namedItem('flag:file-only');
-    if (event?.target === dryRun && dryRun.checked) fileOnly.checked = false;
-    if (event?.target === fileOnly && fileOnly.checked) dryRun.checked = false;
     const prompt = form.elements.namedItem('prompt');
     prompt.setCustomValidity(prompt.value.trim() ? '' : 'Describe what to build, fix, or improve.');
   }
   const input = commandInput();
-  const bits = ['spar', input.command, input.targets || '', input.topic ? JSON.stringify(input.topic) : '', input.dryRun ? '--dry-run' : '', input.limit ? `--limit ${input.limit}` : ''];
-  for (const [flag, value] of Object.entries(input.flags)) if (value) bits.push(`--${flag}${value === true ? '' : ` ${value}`}`);
+  const bits = ['spar', input.command, input.targets || '', input.topic ? JSON.stringify(input.topic) : '', input.dryRun ? '--dry-run' : ''];
+  for (const [flag, value] of Object.entries(input.flags)) if (value) bits.push(value === true ? `--${flag}` : `--${flag} ${flag === 'instructions' || !/^[\w./-]+$/.test(value) ? JSON.stringify(value) : value}`);
+  if (input.limit) bits.push(`--limit ${input.limit}`);
   if (input.prompt) bits.push('--', JSON.stringify(input.prompt));
   $('#command-preview').textContent = bits.filter(Boolean).join(' ');
 }
