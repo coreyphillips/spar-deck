@@ -19,6 +19,7 @@ Choose specific pull requests, preview a dry run, and adjust review options befo
 - Browse repositories under Documents, including nested project folders.
 - Add project cards, drag them into your preferred order, or use keyboard-accessible move buttons.
 - Start Listen and Review directly from a card.
+- See how many follow-ups wait in a project's `.spar/followups.md`, counted the way `spar followup` counts them. The card shows nothing when the queue is empty. Click the count to open Follow up.
 - Edit each project's `spar.toml` with syntax checks and protection against stale saves.
 - Turn a feature request, bug report, or enhancement into an issue and PR with Code.
 - Run check-in, triage, resume, brainstorm, follow-up, split, doctor, initialize, and clean with structured command options.
@@ -231,7 +232,7 @@ npm ci
 npm test
 ```
 
-The test suite uses disposable Git repositories and a fake Spar executable. It verifies path confinement, argument validation, host/origin protection, card ordering, configuration syntax and stale-save protection, safe configuration file handling, run persistence through a web-server restart, duplicate-run prevention, exit reporting, and termination of subprocesses in their own process groups. It does not run reviews or modify remote repositories.
+The test suite uses disposable Git repositories and a fake Spar executable. It verifies path confinement, argument validation, host/origin protection, card ordering, configuration syntax and stale-save protection, safe configuration file handling, follow-up counting, run persistence through a web-server restart, duplicate-run prevention, exit reporting, and termination of subprocesses in their own process groups. It does not run reviews or modify remote repositories.
 
 The interface is plain HTML, CSS, and JavaScript in `public/`. The HTTP server and independent run supervisor are in `src/`. Changes to static assets require a browser reload; server changes require a restart.
 

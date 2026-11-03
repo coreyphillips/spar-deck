@@ -20,3 +20,7 @@ button.config-state{border:0;background:var(--purple-soft);border-radius:5px;pad
 @media(max-width:650px){#config-form{margin:0 18px}.config-buttons{width:100%}.config-buttons .button{flex:1}#config-editor{font-size:13px}}
 
 .config-notice .button{margin-left:8px}
+
+/* Pending follow-up count beside the status badge. */
+.badge.followups{border:0;background:#eaf0f8;color:#52678c}
+.card-top .followups+.badge{margin-left:0}
