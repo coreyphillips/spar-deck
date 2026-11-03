@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { ACTIVE, COMMANDS, defaultDataDir, atomicJSON, readJSON, resolveDirectory, buildArgs, id, socketPath, tailFile } from './core.mjs';
 import { processTable } from './process-tree.mjs';
 import { readConfig, writeConfig } from './project-config.mjs';
+import { readFollowupCount } from './followups.mjs';
 const execute = promisify(execFile);
 const source = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(source, '../public');
@@ -44,8 +45,8 @@ export async function createDeck(options = {}) {
     try {
       resolveDirectory(root, project.path);
       const result = await execute('git', ['-C', project.path, 'branch', '--show-current'], { timeout: 2000 });
-      return { ...project, branch: result.stdout.trim() || 'detached', configured: fs.existsSync(path.join(project.path, 'spar.toml')), available: true };
-    } catch { return { ...project, branch: '', configured: false, available: false }; }
+      return { ...project, branch: result.stdout.trim() || 'detached', configured: fs.existsSync(path.join(project.path, 'spar.toml')), available: true, followups: readFollowupCount(project.path) };
+    } catch { return { ...project, branch: '', configured: false, available: false, followups: 0 }; }
   }
   async function snapshot() {
     return { token, root, version, commands: COMMANDS, projects: await Promise.all(state.projects.map(metadata)), jobs: allJobs().reverse(), dataDir };
