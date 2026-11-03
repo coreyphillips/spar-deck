@@ -8,7 +8,7 @@ export const ACTIVE = new Set(['starting', 'running', 'stopping', 'unresponsive'
 const AGENT = ['first', 'base', 'instructions'];
 const LOOP = ['keep-worktrees', 'retriage', 'close-skipped', 'no-close-skipped'];
 export const COMMANDS = {
-  listen: { label: 'Listen', description: 'Watch GitHub activity and act on review requests and mentions.', numbers: true, dryRun: true, flags: ['once'], valueFlags: ['since', 'min-number', ...AGENT] },
+  listen: { label: 'Listen', description: 'Watch GitHub activity and act on review requests, mentions, and issues assigned to you.', numbers: true, dryRun: true, flags: ['once'], valueFlags: ['since', 'min-number', ...AGENT] },
   review: { label: 'Review', description: 'Review open pull requests and post findings. Leave targets blank for all open PRs.', numbers: true, dryRun: true, flags: ['verdict', 'recheck'], valueFlags: ['max-rounds', 'min-number', ...AGENT] },
   checkin: { label: 'Check in', description: 'Answer PR comments and apply agreed changes.', numbers: true, dryRun: true, flags: ['reply-only', 'any-author', 'again', 'keep-worktrees'], valueFlags: ['min-number', ...AGENT] },
   run: { label: 'Run', description: 'Work issues and continue pull requests using this project’s Spar configuration.', numbers: true, flags: [...LOOP], valueFlags: ['max-rounds', 'min-number', 'absorb', ...AGENT] },

@@ -35,6 +35,7 @@ The server uses one small TOML parser dependency. There are no external fonts, a
 - macOS for the login-service installer. The server and process supervisor also work on Linux.
 - Node.js 22 or newer, Git, and Spar on your PATH.
 - Spar 0.4.25 or newer for the Code command. Upgrade Spar after that release is published.
+- Spar 0.4.33 or newer for Listen to run `spar run` on issues assigned to you.
 - Spar's normal prerequisites, including GitHub CLI authentication and the tools selected in each project's `spar.toml`.
 
 ## Start
@@ -50,7 +51,7 @@ Open **http://127.0.0.1:4177**. No build step is needed. Run `npm ci` after pull
 
 Choose **Add project**, browse to a Git repository, and add it. A repository without `spar.toml` gets an **Initialize** button. Initialization preserves existing configuration.
 
-**Listen** runs `spar listen`. **Review** runs `spar review`, which reviews open PRs and posts findings. Use the three-dot command button for specific targets or a dry run. Commands run in the chosen repository and honor its existing Spar configuration.
+**Listen** runs `spar listen`. With Spar 0.4.33 or newer, an issue assigned to you while it listens, by someone else or by yourself, gets `spar run`: triage, then implementation and review, or the pull request already open for it is continued. Set `on_assigned_issue = "ignore"` under `[listen]` in the project's `spar.toml` to turn that off. **Review** runs `spar review`, which reviews open PRs and posts findings. Use the three-dot command button for specific targets or a dry run. Commands run in the chosen repository and honor its existing Spar configuration.
 
 Only one command can run per project at a time. Stop a listener before starting a manual review on the same project. Different projects can run simultaneously. This prevents commands from competing over Spar's shared state and worktrees.
 
