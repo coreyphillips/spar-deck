@@ -55,7 +55,19 @@ Choose **Add project**, browse to a Git repository, and add it. A repository wit
 
 **Listen** runs `spar listen`. With Spar 0.4.33 or newer, an issue assigned to you while it listens, by someone else or by yourself, gets `spar run`: triage, then implementation and review, or the pull request already open for it is continued. Set `on_assigned_issue = "ignore"` under `[listen]` in the project's `spar.toml` to turn that off. **Review** runs `spar review`, which reviews open PRs and posts findings. Use the three-dot command button for specific targets or a dry run. Commands run in the chosen repository and honor its existing Spar configuration.
 
-Only one command can run per project at a time. Stop a listener before starting a manual review on the same project. Different projects can run simultaneously. This prevents commands from competing over Spar's shared state and worktrees.
+Only one command can run per project at a time. Different projects can run simultaneously. This prevents commands from competing over Spar's shared state and worktrees.
+
+### Pause Listen for another command
+
+While a project listens, open its three-dot command button, or click its follow-up count, and start any command other than Listen. The dialog warns before anything stops. Deck then:
+
+1. Stops Listen the same way **Stop run** does. Any work Listen is doing is interrupted, since Deck cannot tell whether it is idle. Stopping can take about 21 seconds, and the card shows **Pausing Listen** meanwhile.
+2. Starts the command once Listen's run has ended as stopped. If Listen ends any other way, the command does not run, its run is marked failed with a `[deck]` line explaining why, and Listen stays off.
+3. Starts a new Listen run with exactly the same options when the command completes, fails, or is stopped. This happens once, with or without a browser open, and after a web-server restart.
+
+While the command runs, the card says Listen will resume. Choose **Don't restart Listen** on the card to leave the project idle afterwards. **Stop run** in the config editor stops the command and also keeps Listen off, so you can save. Listen does not restart after an interrupted command, for example after a reboot. If the restart fails, the card shows why. Run history keeps all three runs, and each log notes why Listen stopped or started.
+
+A listener started with **Poll once** cannot be paused. Neither can one that is starting, stopping, or needs attention. Scripts calling `POST /api/jobs` must send `"pauseListener": true` to pause a listener; without it, the request is rejected as before.
 
 ## Start work from a prompt
 
@@ -183,7 +195,7 @@ Removal preserves your saved data and any active Spar runs. Stop your runs in th
 | Computer sleeps | Preserved | Paused by the OS until wake |
 | Log out or reboot | Preserved | End; restart manually after login |
 
-Commands are deliberately not replayed automatically after a reboot, since some can post comments, push code, or file issues. A lost supervisor is reported as interrupted. If its Spar process is still alive, the card needs attention and blocks another run until that process is stopped.
+Commands are deliberately not replayed automatically after a reboot, since some can post comments, push code, or file issues. The same holds for a paused listener: if the command that paused it is interrupted, Listen stays off. A command that finishes while the web server is down restarts its paused listener when the server starts again. A lost supervisor is reported as interrupted. If its Spar process is still alive, the card needs attention and blocks another run until that process is stopped.
 
 **Stop run** asks Spar to exit with SIGINT and allows up to 20 seconds for cleanup before forcing termination. Spar can create tool subprocesses in separate process groups, so the supervisor tracks descendants and checks their process identities before terminating them. A command stopped during a write should be inspected before retrying, as with Ctrl-C in a terminal. Unrelated Spar processes started outside the dashboard are not managed by the deck.
 
@@ -233,7 +245,7 @@ npm ci
 npm test
 ```
 
-The test suite uses disposable Git repositories and a fake Spar executable. It verifies path confinement, argument validation, host/origin protection, card ordering, configuration syntax and stale-save protection, safe configuration file handling, follow-up counting, run persistence through a web-server restart, duplicate-run prevention, exit reporting, and termination of subprocesses in their own process groups. It does not run reviews or modify remote repositories.
+The test suite uses disposable Git repositories and a fake Spar executable. It verifies path confinement, argument validation, host/origin protection, card ordering, configuration syntax and stale-save protection, safe configuration file handling, follow-up counting, run persistence through a web-server restart, duplicate-run prevention, pausing and restarting a listener around another command, exit reporting, and termination of subprocesses in their own process groups. It does not run reviews or modify remote repositories.
 
 The interface is plain HTML, CSS, and JavaScript in `public/`. The HTTP server and independent run supervisor are in `src/`. Changes to static assets require a browser reload; server changes require a restart.
 

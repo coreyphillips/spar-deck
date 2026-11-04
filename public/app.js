@@ -31,7 +31,7 @@ $$('[data-icon]').forEach(el => { el.innerHTML = icon(el.dataset.icon); });
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const activeStatuses = new Set(['starting', 'running', 'stopping', 'unresponsive']);
 let state = { projects: [], jobs: [], commands: {} }, filter = 'all', view = 'projects', query = '', signature = '', connected = false;
-let commandProject, currentFolder, selectedLog, removeId, draggedId, toastTimer, refreshing = false;
+let commandProject, commandPause = false, currentFolder, selectedLog, removeId, draggedId, toastTimer, refreshing = false;
 const busyProjects = new Set();
 let configProject, configSnapshot, configBusy = false, configDiscardAction, configUpdateJob, configOutputJob;
 const configDirty = () => configSnapshot && $('#config-editor').value !== configSnapshot.editorContent;
@@ -117,7 +117,9 @@ async function saveConfig() {
 }
 const latest = project => state.jobs.find(j => j.projectId === project.id);
 const isActive = job => job && activeStatuses.has(job.status);
-const statusLabel = job => !job ? 'Ready' : job.status === 'running' ? job.command === 'listen' ? 'Listening' : 'Working' : ({ completed: 'Completed', stopped: 'Stopped', starting: 'Starting', stopping: 'Stopping', failed: 'Failed', interrupted: 'Interrupted', unresponsive: 'Needs attention' }[job.status] || job.status);
+// Deck can stop a running listener for another command and start it again afterwards.
+const pausable = job => job?.command === 'listen' && job.status === 'running' && !job.args.includes('--once');
+const statusLabel = job => !job ? 'Ready' : job.status === 'starting' && job.resume ? 'Pausing Listen' : job.status === 'running' ? job.command === 'listen' ? 'Listening' : 'Working' : ({ completed: 'Completed', stopped: 'Stopped', starting: 'Starting', stopping: 'Stopping', failed: 'Failed', interrupted: 'Interrupted', unresponsive: 'Needs attention' }[job.status] || job.status);
 const time = value => new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 function relative(value) {
   const seconds = Math.max(0, (Date.now() - Date.parse(value)) / 1000);
@@ -195,10 +197,24 @@ function card(project) {
   const job = latest(project), running = isActive(job), busy = busyProjects.has(project.id);
   const status = !project.available ? 'Unavailable' : running ? statusLabel(job) : !project.configured ? 'Setup needed' : ['failed', 'interrupted', 'unresponsive'].includes(job?.status) ? statusLabel(job) : 'Ready';
   const statusClass = !project.available ? 'unavailable' : running ? job.command === 'listen' ? 'listening' : 'working' : ['failed', 'interrupted', 'unresponsive'].includes(job?.status) ? job.status : '';
-  const disabled = !connected || !project.available || busy;
+  const disabled = !connected || !project.available || busy, canPause = pausable(job);
   const relativePath = project.path.startsWith(state.root) ? `${state.root.split('/').pop()}${project.path.slice(state.root.length)}` : project.path;
   const tone = [...project.name].reduce((n, c) => n + c.charCodeAt(0), 0) % 5;
-  return `<article class="project-card" data-card="${project.id}"><div class="card-body"><div class="card-top"><span class="project-avatar tone-${tone}">${esc(project.name.slice(0, 2).toUpperCase())}</span>${followupIndicator(project, !disabled && !running)}<span class="badge ${statusClass}">${status}</span><button class="icon-button grip" draggable="true" data-drag="${project.id}" aria-label="Drag ${esc(project.name)} to reorder" title="Drag to reorder">${icon('grip')}</button></div><h2 class="card-title" title="${esc(project.name)}">${esc(project.name)}</h2><p class="card-path" title="${esc(project.path)}">${esc(relativePath)}</p><div class="branch-row">${icon('branch')}<span>${esc(project.branch || 'folder unavailable')}</span><button class="config-state ${project.configured ? '' : 'needs-setup'}" data-action="config" data-project="${project.id}" aria-label="Edit configuration for ${esc(project.name)}" title="Edit this project’s spar.toml" ${disabled ? 'disabled' : ''}>${icon('sliders')}${project.configured ? 'Edit config' : 'Add config'}</button></div><div class="run-preview ${running ? 'is-active' : ''}"><div class="preview-command">${icon('terminal')}${job ? esc(`spar ${job.args.join(' ')}`) : 'Ready when you are.'}</div><div class="preview-meta">${job ? `${statusLabel(job)} · ${running ? 'started' : 'updated'} ${relative(job.endedAt || job.createdAt)}` : 'Start listening or choose your next command.'}</div></div><div class="card-actions">${running ? `<button class="button danger" data-action="stop" data-project="${project.id}" ${busy || job.status === 'starting' || job.status === 'stopping' ? 'disabled' : ''}>${icon('stop')}${job.status === 'stopping' ? 'Stopping…' : 'Stop run'}</button>` : `<button class="button listen-button" data-action="${project.configured ? 'listen' : 'init'}" data-project="${project.id}" ${disabled ? 'disabled' : ''}>${icon(project.configured ? 'radio' : 'plus')}${project.configured ? 'Listen' : 'Initialize'}</button>`}<button class="button" data-action="${running ? 'logs' : 'review'}" data-project="${project.id}" ${disabled || (!running && !project.configured) ? 'disabled' : ''}>${icon(running ? 'terminal' : 'review')}${running ? 'Live output' : 'Review'}</button><button class="button more-button" data-action="commands" data-project="${project.id}" aria-label="More commands for ${esc(project.name)}" title="Command options" ${disabled || running ? 'disabled' : ''}>${icon('more')}</button></div></div><div class="card-footer"><button class="text-button" data-action="logs" data-project="${project.id}" ${job ? '' : 'disabled'}>${job ? 'View run history' : 'No runs yet'}${job ? icon('arrow') : ''}</button><div><button class="icon-button" data-action="left" data-project="${project.id}" aria-label="Move ${esc(project.name)} earlier" title="Move earlier">${icon('left')}</button><button class="icon-button" data-action="right" data-project="${project.id}" aria-label="Move ${esc(project.name)} later" title="Move later">${icon('right')}</button><button class="icon-button" data-action="remove" data-project="${project.id}" aria-label="Remove ${esc(project.name)} card" title="Remove card" ${running ? 'disabled' : ''}>${icon('x')}</button></div></div></article>`;
+  return `<article class="project-card" data-card="${project.id}"><div class="card-body"><div class="card-top"><span class="project-avatar tone-${tone}">${esc(project.name.slice(0, 2).toUpperCase())}</span>${followupIndicator(project, !disabled && (!running || canPause))}<span class="badge ${statusClass}">${status}</span><button class="icon-button grip" draggable="true" data-drag="${project.id}" aria-label="Drag ${esc(project.name)} to reorder" title="Drag to reorder">${icon('grip')}</button></div><h2 class="card-title" title="${esc(project.name)}">${esc(project.name)}</h2><p class="card-path" title="${esc(project.path)}">${esc(relativePath)}</p><div class="branch-row">${icon('branch')}<span>${esc(project.branch || 'folder unavailable')}</span><button class="config-state ${project.configured ? '' : 'needs-setup'}" data-action="config" data-project="${project.id}" aria-label="Edit configuration for ${esc(project.name)}" title="Edit this project’s spar.toml" ${disabled ? 'disabled' : ''}>${icon('sliders')}${project.configured ? 'Edit config' : 'Add config'}</button></div><div class="run-preview ${running ? 'is-active' : ''}"><div class="preview-command">${icon('terminal')}${job ? esc(`spar ${job.args.join(' ')}`) : 'Ready when you are.'}</div><div class="preview-meta">${job ? `${statusLabel(job)} · ${running ? 'started' : 'updated'} ${relative(job.endedAt || job.createdAt)}` : 'Start listening or choose your next command.'}</div></div>${resumeNote(project, job)}<div class="card-actions">${running ? `<button class="button danger" data-action="stop" data-project="${project.id}" ${busy || job.status === 'starting' || job.status === 'stopping' ? 'disabled' : ''}>${icon('stop')}${job.status === 'stopping' ? 'Stopping…' : 'Stop run'}</button>` : `<button class="button listen-button" data-action="${project.configured ? 'listen' : 'init'}" data-project="${project.id}" ${disabled ? 'disabled' : ''}>${icon(project.configured ? 'radio' : 'plus')}${project.configured ? 'Listen' : 'Initialize'}</button>`}<button class="button" data-action="${running ? 'logs' : 'review'}" data-project="${project.id}" ${disabled || (!running && !project.configured) ? 'disabled' : ''}>${icon(running ? 'terminal' : 'review')}${running ? 'Live output' : 'Review'}</button><button class="button more-button" data-action="commands" data-project="${project.id}" aria-label="More commands for ${esc(project.name)}" title="Command options" ${disabled || (running && !canPause) ? 'disabled' : ''}>${icon('more')}</button></div></div><div class="card-footer"><button class="text-button" data-action="logs" data-project="${project.id}" ${job ? '' : 'disabled'}>${job ? 'View run history' : 'No runs yet'}${job ? icon('arrow') : ''}</button><div><button class="icon-button" data-action="left" data-project="${project.id}" aria-label="Move ${esc(project.name)} earlier" title="Move earlier">${icon('left')}</button><button class="icon-button" data-action="right" data-project="${project.id}" aria-label="Move ${esc(project.name)} later" title="Move later">${icon('right')}</button><button class="icon-button" data-action="remove" data-project="${project.id}" aria-label="Remove ${esc(project.name)} card" title="Remove card" ${running ? 'disabled' : ''}>${icon('x')}</button></div></div></article>`;
+}
+// The newest run is the pausing command until Listen restarts, so the card explains what happens next.
+function resumeNote(project, job) {
+  const resume = job?.resume;
+  if (!resume) return '';
+  const running = isActive(job);
+  let text = '';
+  if (resume.status === 'pending') text = job.status === 'starting' ? 'Waiting for Listen to stop. This can take about 20 seconds.' : running ? 'Listen resumes with the same options when this finishes.' : 'Restarting Listen…';
+  else if (resume.status === 'skipped') text = resume.reason === 'interrupted' ? 'Listen was paused and did not resume because this run was interrupted.' : resume.reason === 'blocked' ? 'Listen did not stop cleanly, so this command did not run and Listen was not restarted.' : '';
+  else if (resume.status === 'failed') text = `Listen could not restart: ${resume.error}`;
+  else if (resume.status === 'cancelled' && running) text = 'Listen stays off when this finishes.';
+  if (!text) return '';
+  const cancel = resume.status === 'pending' && running ? `<button class="text-button" data-action="cancel-resume" data-project="${project.id}" ${busyProjects.has(project.id) ? 'disabled' : ''}>Don’t restart Listen</button>` : '';
+  return `<div class="resume-note ${['skipped', 'failed'].includes(resume.status) ? 'error' : ''}" role="status"><span>${esc(text)}</span>${cancel}</div>`;
 }
 async function openPicker(directory = state.root) { $('#picker-dialog').showModal(); await browse(directory); }
 async function browse(directory) {
@@ -218,10 +234,14 @@ async function browse(directory) {
 async function addProject(directory) {
   await api('/api/projects', 'POST', { path: directory }); await refresh(true); await browse(currentFolder); toast('Project added to your deck.');
 }
-function openCommand(project, command = 'listen') {
-  commandProject = project; $('#command-project').textContent = project.name;
-  $('#command-select').innerHTML = Object.entries(state.commands).map(([key, spec]) => `<option value="${key}">${esc(spec.label)}</option>`).join('');
-  $('#command-select').value = command; commandFields(); $('#command-dialog').showModal();
+function openCommand(project, command) {
+  commandProject = project; commandPause = pausable(latest(project)); $('#command-project').textContent = project.name;
+  $('#command-select').innerHTML = Object.entries(state.commands).filter(([key]) => !commandPause || key !== 'listen').map(([key, spec]) => `<option value="${key}">${esc(spec.label)}</option>`).join('');
+  $('#command-select').value = command || (commandPause ? 'review' : 'listen');
+  // Pausing interrupts Listen like Stop run does. Deck cannot tell whether it is idle, so say so before starting.
+  $('#command-note').textContent = commandPause ? 'Listen stops first, the same way Stop run does, so any work it is doing is interrupted. Stopping can take about 20 seconds. Listen restarts with the same options when this command finishes.' : 'Runs in the selected project folder.';
+  $('#command-note').classList.toggle('pause-notice', commandPause);
+  commandFields(); $('#command-dialog').showModal();
 }
 const NUMBER = 'type="number" min="1" max="999999"';
 const AGENT_KEY = 'maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]{0,63}" title="An agent key from spar.toml, such as codex" autocomplete="off" spellcheck="false"';
@@ -302,11 +322,13 @@ async function run(project, input) {
   busyProjects.add(project.id); render();
   try {
     const job = await api('/api/jobs', 'POST', { projectId: project.id, ...input });
-    $('#command-dialog').close(); await refresh(true); toast(`${state.commands[input.command].label} started for ${project.name}.`);
+    $('#command-dialog').close(); await refresh(true);
+    toast(input.pauseListener ? `Pausing Listen for ${project.name}. ${state.commands[input.command].label} starts when it stops.` : `${state.commands[input.command].label} started for ${project.name}.`);
     if (['doctor', 'init', 'code'].includes(input.command)) await openLogs(job.id);
   } finally { busyProjects.delete(project.id); render(); }
 }
-async function stop(job) { await api(`/api/jobs/${job.id}/stop`, 'POST', {}); toast('Stop requested. Spar is cleaning up.'); await refresh(true); }
+async function stop(job, options = {}) { await api(`/api/jobs/${job.id}/stop`, 'POST', options); toast('Stop requested. Spar is cleaning up.'); await refresh(true); }
+async function cancelResume(job) { await api(`/api/jobs/${job.id}/cancel-resume`, 'POST', {}); toast('Listen will stay off when this command finishes.'); await refresh(true); }
 async function openLogs(jobId) {
   selectedLog = jobId; const job = state.jobs.find(j => j.id === jobId); if (!job) return;
   $('#log-project').textContent = job.projectName; $('#log-title').textContent = 'A closer look.';
@@ -328,7 +350,7 @@ async function refreshLog() {
 }
 async function reorder(ids) { await api('/api/order', 'PUT', { ids }); await refresh(true); }
 function about() {
-  $('#about-content').innerHTML = `<span class="about-version">Spar Deck 1.0 · ${esc(state.version)}</span><h3>Close the tab. Keep the momentum.</h3><p>Each command runs in its own background supervisor. Closing this page or restarting the web service leaves your runs working. Open the deck again to reconnect.</p><h3>One command per project</h3><p>Stop a listener before running a manual command on the same project. This keeps Spar’s shared state and worktrees from competing. Other projects run independently.</p><h3>Saved on this Mac</h3><p>Your cards, their order, and run history live in <code>${esc(state.dataDir)}</code>. Each run keeps up to two 2 MB log segments. A reboot ends active commands; they are marked interrupted and can be started again from a card.</p><h3>Project root</h3><p><code>${esc(state.root)}</code></p><h3>Background service</h3><p>The included macOS login service keeps the dashboard available and starts it when you sign in. Use <code>npm run service:status</code> from the Spar Deck folder to check it.</p><h3>Your existing Spar configuration</h3><p>Commands use each project’s <code>spar.toml</code> and your installed tools. Listen can trigger reviews and check-ins. Review posts findings unless you choose a dry run in command options.</p>`;
+  $('#about-content').innerHTML = `<span class="about-version">Spar Deck 1.0 · ${esc(state.version)}</span><h3>Close the tab. Keep the momentum.</h3><p>Each command runs in its own background supervisor. Closing this page or restarting the web service leaves your runs working. Open the deck again to reconnect.</p><h3>One command per project</h3><p>Each project runs one command at a time. This keeps Spar’s shared state and worktrees from competing. Other projects run independently.</p><h3>Pause Listen for another command</h3><p>While a project listens, open command options to run something else. Deck stops Listen the way Stop run does, starts your command once Listen has exited, and starts Listen again with the same options when the command completes, fails, or is stopped. Choose Don’t restart Listen on the card to keep it off. Listen stays off if the command is interrupted, for example by a reboot, or if Listen did not stop cleanly. The restart happens even with this page closed.</p><h3>Saved on this Mac</h3><p>Your cards, their order, and run history live in <code>${esc(state.dataDir)}</code>. Each run keeps up to two 2 MB log segments. A reboot ends active commands; they are marked interrupted and can be started again from a card.</p><h3>Project root</h3><p><code>${esc(state.root)}</code></p><h3>Background service</h3><p>The included macOS login service keeps the dashboard available and starts it when you sign in. Use <code>npm run service:status</code> from the Spar Deck folder to check it.</p><h3>Your existing Spar configuration</h3><p>Commands use each project’s <code>spar.toml</code> and your installed tools. Listen can trigger reviews and check-ins. Review posts findings unless you choose a dry run in command options.</p>`;
   $('#about-dialog').showModal();
 }
 // Delegation keeps controls working through live status updates.
@@ -351,6 +373,7 @@ document.addEventListener('click', event => {
       case 'config': return openConfig(project);
       case 'logs': return openLogs(latest(project).id);
       case 'stop': return stop(latest(project));
+      case 'cancel-resume': return cancelResume(latest(project));
       case 'remove': removeId = project.id; $('#remove-description').textContent = `${project.name} will leave your dashboard. Its files and saved run history will stay on this Mac.`; return $('#remove-dialog').showModal();
       case 'left': case 'right': {
         const ids = state.projects.map(p => p.id); const index = ids.indexOf(project.id), next = index + (button.dataset.action === 'left' ? -1 : 1);
@@ -365,7 +388,8 @@ $('#config-form').addEventListener('submit', event => { event.preventDefault(); 
 $('#update-config').addEventListener('click', updateConfig);
 $('#config-update-output').addEventListener('click', () => action(() => openLogs(configOutputJob)));
 $('#reload-config').addEventListener('click', () => discardConfigThen(loadConfig));
-$('#stop-config-run').addEventListener('click', () => action(() => stop(latest(configProject))));
+// Saving needs an idle project, so stopping from the editor also keeps a paused listener off.
+$('#stop-config-run').addEventListener('click', () => action(() => stop(latest(configProject), { cancelResume: true })));
 $('#config-dialog').addEventListener('cancel', event => { event.preventDefault(); closeDialog(event.currentTarget); });
 $('#confirm-discard-config').addEventListener('click', () => { $('#discard-config-dialog').close(); configDiscardAction?.(); configDiscardAction = null; });
 window.addEventListener('beforeunload', event => { if ($('#config-dialog').open && configDirty()) { event.preventDefault(); event.returnValue = ''; } });
@@ -377,7 +401,8 @@ $('#mobile-about').addEventListener('click', about);
 $('#search').addEventListener('input', event => { query = event.target.value; render(); });
 $('#command-select').addEventListener('change', commandFields);
 $('#command-form').addEventListener('input', commandPreview);
-$('#command-form').addEventListener('submit', event => { event.preventDefault(); action(() => run(commandProject, commandInput())); });
+// The opt-in is sent only from a dialog that showed the pause notice.
+$('#command-form').addEventListener('submit', event => { event.preventDefault(); action(() => run(commandProject, { ...commandInput(), ...(commandPause ? { pauseListener: true } : {}) })); });
 $('#log-run-select').addEventListener('change', event => { selectedLog = event.target.value; $('#log-output').textContent = ''; action(refreshLog); });
 $('#stop-log').addEventListener('click', () => action(() => stop(state.jobs.find(j => j.id === selectedLog))));
 $('#copy-log').addEventListener('click', () => action(async () => { await navigator.clipboard.writeText($('#log-output').textContent); toast('Output copied.'); }));

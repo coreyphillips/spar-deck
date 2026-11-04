@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createDeck } from '../src/server.mjs';
 import { atomicJSON } from '../src/core.mjs';
 
@@ -269,4 +270,160 @@ setTimeout(() => { fs.appendFileSync('spar.toml', '\\n# New option\\n# max_round
   fs.unlinkSync(file); fs.symlinkSync(path.join(temp, 'outside.toml'), file); fs.writeFileSync(path.join(temp, 'outside.toml'), original);
   assert.equal((await request('/api/jobs', 'POST', input)).status, 400);
   assert.equal(fs.readFileSync(path.join(temp, 'outside.toml'), 'utf8'), original);
+});
+
+test('pausing a listener runs another command after it exits, then restarts it once', { timeout: 90000 }, async t => {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-pause-')));
+  const root = path.join(temp, 'project'), dataDir = path.join(temp, 'data');
+  fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]);
+  fs.writeFileSync(path.join(root, 'spar.toml'), '');
+  // Listen holds a marker while it runs. Other commands exit non-zero if it is present, so a
+  // completed command proves the listener had exited first.
+  const fake = path.join(temp, 'fake-spar');
+  fs.writeFileSync(fake, `#!${process.execPath}
+const fs = require('node:fs');
+const command = process.argv[2];
+if (command === '--version') { console.log('spar test'); process.exit(0); }
+if (command === 'listen') {
+  fs.writeFileSync('listening', String(process.pid));
+  setInterval(() => {}, 1000);
+  process.on('SIGINT', () => { fs.rmSync('listening', { force: true }); console.log('listener stopped'); process.exit(0); });
+} else {
+  if (fs.existsSync('listening')) { console.error('listener still running'); process.exit(3); }
+  if (command === 'review') { console.log('review finished'); process.exit(0); }
+  setInterval(() => {}, 1000);
+  process.on('SIGINT', () => process.exit(0));
+}
+`, { mode: 0o700 });
+  let deck, base, token;
+  const launch = async () => { deck = await createDeck({ root, dataDir, binary: fake }); await new Promise(resolve => deck.server.listen(0, '127.0.0.1', resolve)); base = `http://127.0.0.1:${deck.server.address().port}`; token = (await fetch(`${base}/api/state`).then(r => r.json())).token; };
+  const close = () => new Promise(resolve => { deck.server.closeAllConnections(); deck.server.close(resolve); });
+  const request = async (url, method = 'GET', body) => {
+    const response = await fetch(`${base}${url}`, { method, headers: { 'X-Deck-Token': token, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: response.status, data: await response.json() };
+  };
+  const jobs = async () => (await request('/api/state')).data.jobs;
+  const jobState = async jobId => (await jobs()).find(j => j.id === jobId);
+  const wait = async fn => { for (let i = 0; i < 300; i++) { const result = await fn(); if (result) return result; await delay(100); } throw new Error('Timed out.'); };
+  const listeners = async () => (await jobs()).filter(j => j.command === 'listen');
+  const runningListener = () => wait(async () => (await listeners()).find(j => j.status === 'running'));
+  t.after(async () => {
+    if (!deck?.server.listening) await launch();
+    for (const job of await jobs()) if (['starting', 'running'].includes(job.status)) await request(`/api/jobs/${job.id}/stop`, 'POST', {}).catch(() => {});
+    await wait(async () => !(await jobs()).some(j => ['starting', 'running', 'stopping'].includes(j.status))).catch(() => {});
+    await close(); fs.rmSync(temp, { recursive: true, force: true });
+  });
+  await launch();
+  const project = (await request('/api/projects', 'POST', { path: root })).data;
+  const args = ['listen', '--since', '2h', '--first', 'codex'];
+  const first = (await request('/api/jobs', 'POST', { projectId: project.id, command: 'listen', flags: { since: '2h', first: 'codex' } })).data;
+  assert.deepEqual(first.args, args);
+  await wait(async () => (await jobState(first.id)).status === 'running');
+
+  assert.equal((await request('/api/jobs', 'POST', { projectId: project.id, command: 'review' })).status, 409, 'pausing needs an explicit opt-in');
+  assert.equal((await request('/api/jobs', 'POST', { projectId: project.id, command: 'listen', pauseListener: true })).status, 409);
+  assert.equal((await request('/api/jobs', 'POST', { projectId: project.id, command: 'sh', pauseListener: true })).status, 400);
+  assert.equal((await request('/api/jobs', 'POST', { projectId: project.id, command: 'review', flags: { since: '2h' }, pauseListener: true })).status, 400);
+  assert.equal((await request('/api/jobs', 'POST', { projectId: project.id, command: 'review', targets: 'x', pauseListener: true })).status, 400);
+  assert.equal((await jobs()).length, 1);
+  assert.equal((await jobState(first.id)).status, 'running', 'rejected requests leave the listener alone');
+
+  const review = await request('/api/jobs', 'POST', { projectId: project.id, command: 'review', pauseListener: true });
+  assert.equal(review.status, 201);
+  assert.deepEqual(review.data.resume, { listenerId: first.id, args, status: 'pending' });
+  await wait(async () => (await jobState(review.data.id)).status === 'completed');
+  assert.equal((await jobState(first.id)).status, 'stopped');
+  const second = await runningListener();
+  assert.deepEqual(second.args, args);
+  assert.deepEqual((await jobState(review.data.id)).resume, { listenerId: first.id, args, status: 'started', jobId: second.id });
+  assert.match((await request(`/api/jobs/${first.id}/log`)).data.output, /\[deck\] Pausing Listen to run spar review/);
+  assert.match((await request(`/api/jobs/${review.data.id}/log`)).data.output, /\[deck\] Waiting for Listen to stop[\s\S]*review finished/);
+  assert.match((await request(`/api/jobs/${second.id}/log`)).data.output, /\[deck\] Restarting Listen after spar review ended as completed/);
+
+  // A long command keeps the project busy, and the restart survives a web-server restart.
+  const checkin = (await request('/api/jobs', 'POST', { projectId: project.id, command: 'checkin', pauseListener: true })).data;
+  await wait(async () => (await jobState(checkin.id)).status === 'running');
+  assert.equal((await jobState(second.id)).status, 'stopped');
+  const busy = await request('/api/jobs', 'POST', { projectId: project.id, command: 'review' });
+  assert.equal(busy.status, 409); assert.match(busy.data.error, /Listen is waiting to restart/);
+  assert.equal((await request('/api/jobs', 'POST', { projectId: project.id, command: 'review', pauseListener: true })).status, 409);
+  const config = (await request(`/api/projects/${project.id}/config`)).data;
+  assert.equal((await request(`/api/projects/${project.id}/config`, 'PUT', { content: 'value = 1', revision: config.revision })).status, 409);
+  assert.equal((await request(`/api/projects/${project.id}`, 'DELETE')).status, 409);
+  await close(); await delay(300); await launch();
+  assert.equal((await jobState(checkin.id)).status, 'running');
+  assert.equal((await jobState(checkin.id)).resume.status, 'pending');
+  assert.equal((await request(`/api/jobs/${checkin.id}/stop`, 'POST', {})).status, 200);
+  await wait(async () => (await jobState(checkin.id)).status === 'stopped');
+  const third = await runningListener();
+  assert.deepEqual(third.args, args);
+  assert.equal((await jobState(checkin.id)).resume.jobId, third.id);
+  await close(); await delay(300); await launch(); await delay(1500);
+  assert.equal((await listeners()).length, 3, 'each pause restarts Listen once');
+
+  // Cancelling the restart leaves the command running and the project idle afterwards.
+  const cancelled = (await request('/api/jobs', 'POST', { projectId: project.id, command: 'checkin', pauseListener: true })).data;
+  await wait(async () => (await jobState(cancelled.id)).status === 'running');
+  assert.equal((await request(`/api/jobs/${cancelled.id}/cancel-resume`, 'POST', {})).status, 200);
+  assert.equal((await request(`/api/jobs/${cancelled.id}/cancel-resume`, 'POST', {})).status, 409);
+  await delay(500);
+  assert.equal((await jobState(cancelled.id)).status, 'running');
+  await request(`/api/jobs/${cancelled.id}/stop`, 'POST', {});
+  await wait(async () => (await jobState(cancelled.id)).status === 'stopped');
+  await delay(1500);
+  assert.equal((await listeners()).length, 3);
+  assert.equal((await jobState(cancelled.id)).resume.status, 'cancelled');
+
+  // The config editor's Stop run frees the project for saving without restarting Listen.
+  const fourth = (await request('/api/jobs', 'POST', { projectId: project.id, command: 'listen', flags: { since: '2h', first: 'codex' } })).data;
+  await wait(async () => (await jobState(fourth.id)).status === 'running');
+  const editorStop = (await request('/api/jobs', 'POST', { projectId: project.id, command: 'checkin', pauseListener: true })).data;
+  await wait(async () => (await jobState(editorStop.id)).status === 'running');
+  await request(`/api/jobs/${editorStop.id}/stop`, 'POST', { cancelResume: true });
+  await wait(async () => (await jobState(editorStop.id)).status === 'stopped');
+  await delay(1500);
+  assert.equal((await listeners()).length, 4);
+  assert(!(await jobs()).some(j => ['starting', 'running', 'stopping'].includes(j.status)));
+  const fresh = (await request(`/api/projects/${project.id}/config`)).data;
+  assert.equal((await request(`/api/projects/${project.id}/config`, 'PUT', { content: 'value = 1', revision: fresh.revision })).status, 200);
+
+  // Only a running, repeating listener can be paused.
+  const once = (await request('/api/jobs', 'POST', { projectId: project.id, command: 'listen', flags: { once: true } })).data;
+  await wait(async () => (await jobState(once.id)).status === 'running');
+  assert.equal((await request('/api/jobs', 'POST', { projectId: project.id, command: 'review', pauseListener: true })).status, 409);
+  await request(`/api/jobs/${once.id}/stop`, 'POST', {});
+  assert.equal((await jobState(once.id)).status, 'stopping');
+  assert.equal((await request('/api/jobs', 'POST', { projectId: project.id, command: 'review', pauseListener: true })).status, 409);
+  await wait(async () => (await jobState(once.id)).status === 'stopped');
+});
+
+test('a pause that cannot finish cleanly never runs the command or restarts Listen', { timeout: 30000 }, async t => {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-pause-fail-')));
+  const root = path.join(temp, 'project'), dataDir = path.join(temp, 'data');
+  fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]); fs.mkdirSync(dataDir);
+  const fake = path.join(temp, 'fake-spar');
+  fs.writeFileSync(fake, `#!${process.execPath}\nif (process.argv[2] !== '--version') require('node:fs').appendFileSync('ran', process.argv[2] + '\\n');\n`, { mode: 0o700 });
+  const project = { id: 'project', path: root, name: 'project', addedAt: new Date().toISOString() };
+  const args = ['listen', '--since', '2h'], createdAt = new Date().toISOString();
+  const record = (jobId, command, extra = {}) => ({ id: jobId, projectId: project.id, projectName: project.name, command, args: command === 'listen' ? args : [command], createdAt, ...extra });
+  const resume = listenerId => ({ resume: { listenerId, args, status: 'pending' } });
+  // Listen ended failed during the pause, and a second command's supervisor was lost.
+  atomicJSON(path.join(dataDir, 'jobs', 'listener', 'status.json'), { status: 'failed', cleanupIncomplete: true, heartbeat: Date.now() });
+  atomicJSON(path.join(dataDir, 'jobs', 'blocked', 'request.json'), { cwd: root, binary: fake, args: ['review'], waitFor: 'listener' });
+  atomicJSON(path.join(dataDir, 'jobs', 'lost', 'status.json'), { status: 'running', heartbeat: Date.now() - 60000 });
+  atomicJSON(path.join(dataDir, 'deck.json'), { version: 1, projects: [project], jobs: [record('listener', 'listen'), record('lost', 'checkin', resume('listener')), record('blocked', 'review', resume('listener'))] });
+  const worker = spawn(process.execPath, [fileURLToPath(new URL('../src/worker.mjs', import.meta.url)), dataDir, 'blocked'], { stdio: 'ignore' });
+  await new Promise(resolve => worker.once('exit', resolve));
+  const deck = await createDeck({ root, dataDir, binary: fake });
+  t.after(async () => { deck.server.closeAllConnections(); await new Promise(resolve => deck.server.close(resolve)); fs.rmSync(temp, { recursive: true, force: true }); });
+  await delay(1500);
+  const { jobs } = await deck.snapshot();
+  const blocked = jobs.find(j => j.id === 'blocked'), lost = jobs.find(j => j.id === 'lost');
+  assert.equal(blocked.status, 'failed'); assert.equal(blocked.blocked, true);
+  assert.deepEqual(blocked.resume, { listenerId: 'listener', args, status: 'skipped', reason: 'blocked' });
+  assert.match(fs.readFileSync(path.join(dataDir, 'jobs', 'blocked', 'output.log'), 'utf8'), /\[deck\] Listen ended as failed instead of stopping cleanly\. This command did not run/);
+  assert.equal(lost.status, 'interrupted');
+  assert.deepEqual(lost.resume, { listenerId: 'listener', args, status: 'skipped', reason: 'interrupted' });
+  assert.equal(jobs.length, 3, 'no listener starts');
+  assert.equal(fs.existsSync(path.join(root, 'ran')), false, 'Spar never ran');
 });
