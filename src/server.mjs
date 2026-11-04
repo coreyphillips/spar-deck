@@ -144,8 +144,7 @@ export async function createDeck(options = {}) {
     if (changed) save();
   }
   function tick() { try { resumeListeners(); } catch (error) { console.error(`Could not restart a paused listener: ${error.message}`); } }
-  tick();
-  const resumeTimer = setInterval(tick, 1000); resumeTimer.unref();
+  let resumeTimer;
   function reply(res, status, data) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); }
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -225,6 +224,8 @@ export async function createDeck(options = {}) {
       reply(res, 404, { error: 'Not found.' });
     } catch (error) { reply(res, error.status || 400, { error: error.message }); }
   });
+  // Restarts wait for the port, so a second Deck that fails to bind cannot launch a listener the running one never records.
+  server.on('listening', () => { tick(); resumeTimer = setInterval(tick, 1000); resumeTimer.unref(); });
   server.on('close', () => clearInterval(resumeTimer));
   return { server, snapshot, dataDir };
 }

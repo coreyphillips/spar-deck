@@ -416,6 +416,7 @@ test('a pause that cannot finish cleanly never runs the command or restarts List
   await new Promise(resolve => worker.once('exit', resolve));
   const deck = await createDeck({ root, dataDir, binary: fake });
   t.after(async () => { deck.server.closeAllConnections(); await new Promise(resolve => deck.server.close(resolve)); fs.rmSync(temp, { recursive: true, force: true }); });
+  await new Promise(resolve => deck.server.listen(0, '127.0.0.1', resolve));
   await delay(1500);
   const { jobs } = await deck.snapshot();
   const blocked = jobs.find(j => j.id === 'blocked'), lost = jobs.find(j => j.id === 'lost');
@@ -426,4 +427,23 @@ test('a pause that cannot finish cleanly never runs the command or restarts List
   assert.deepEqual(lost.resume, { listenerId: 'listener', args, status: 'skipped', reason: 'interrupted' });
   assert.equal(jobs.length, 3, 'no listener starts');
   assert.equal(fs.existsSync(path.join(root, 'ran')), false, 'Spar never ran');
+});
+
+test('a deck that cannot bind its port never restarts a paused listener', { timeout: 10000 }, async t => {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-pause-port-')));
+  const root = path.join(temp, 'project'), dataDir = path.join(temp, 'data');
+  fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]); fs.mkdirSync(dataDir);
+  const project = { id: 'project', path: root, name: 'project', addedAt: new Date().toISOString() };
+  const done = { id: 'done', projectId: project.id, projectName: project.name, command: 'review', args: ['review'], createdAt: new Date().toISOString(), resume: { listenerId: 'listener', args: ['listen'], status: 'pending' } };
+  atomicJSON(path.join(dataDir, 'jobs', 'done', 'status.json'), { status: 'completed', heartbeat: Date.now() });
+  atomicJSON(path.join(dataDir, 'deck.json'), { version: 1, projects: [project], jobs: [done] });
+  const running = http.createServer();
+  await new Promise(resolve => running.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise(resolve => running.close(resolve)); fs.rmSync(temp, { recursive: true, force: true }); });
+  const deck = await createDeck({ root, dataDir, binary: path.join(temp, 'missing-spar') });
+  const error = await new Promise(resolve => { deck.server.once('error', resolve); deck.server.listen(running.address().port, '127.0.0.1'); });
+  assert.equal(error.code, 'EADDRINUSE');
+  await delay(1500);
+  assert.deepEqual(fs.readdirSync(path.join(dataDir, 'jobs')), ['done']);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'deck.json'), 'utf8')).jobs[0].resume.status, 'pending');
 });
