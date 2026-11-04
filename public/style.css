@@ -24,3 +24,9 @@ button.config-state{border:0;background:var(--purple-soft);border-radius:5px;pad
 /* Pending follow-up count beside the status badge. */
 .badge.followups{border:0;background:#eaf0f8;color:#52678c}
 .card-top .followups+.badge{margin-left:0}
+
+/* Filter tab labels never wrap. Where the tabs share a row with search, the search box gives up width first. */
+.tab{white-space:nowrap}.tabs{flex-shrink:0}.search{min-width:0}
+@media(min-width:651px) and (max-width:900px){.tabs{gap:12px}}
+/* Four tabs do not fit a phone, so the row scrolls. The padding keeps focus rings and the selected underline inside the scroll box, and the negative margin cancels it. */
+@media(max-width:650px){.tabs{overflow-x:auto;scrollbar-width:none;padding:6px 6px 7px;margin:-6px -6px -7px;scroll-padding-inline:6px}}
