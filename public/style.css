@@ -30,3 +30,9 @@ button.config-state{border:0;background:var(--purple-soft);border-radius:5px;pad
 @media(min-width:651px) and (max-width:900px){.tabs{gap:12px}}
 /* Four tabs do not fit a phone, so the row scrolls. The padding keeps focus rings and the selected underline inside the scroll box, and the negative margin cancels it. */
 @media(max-width:650px){.tabs{overflow-x:auto;scrollbar-width:none;padding:6px 6px 7px;margin:-6px -6px -7px;scroll-padding-inline:6px}}
+
+/* Note on a card whose command paused Listen. */
+.resume-note{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:10px;line-height:1.5;color:#52678c;background:#eaf0f8;border-radius:6px;padding:7px 9px;margin:-6px 0 12px}
+.resume-note.error{color:#a65d45;background:#fbefeb}
+.resume-note .text-button{font-size:10px;padding:0;text-decoration:underline}
+.dialog-footer .pause-notice{color:#86551e}

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { atomicJSON, readJSON, socketPath } from './core.mjs';
+import { ACTIVE, atomicJSON, readJSON, socketPath } from './core.mjs';
 import { descendants, signalVerified, createProcessMonitor } from './process-tree.mjs';
 
 // A separate supervisor owns each run, so browser and web-server lifetimes do not matter.
@@ -64,8 +64,31 @@ const control = net.createServer(connection => {
   connection.setEncoding('utf8'); connection.setTimeout(2000, () => connection.destroy());
   connection.once('data', data => { if (data.trim() === 'stop') void stop(); connection.end('ok'); });
 });
-control.listen(socket, () => {
+// A paused listener must be gone before this command starts, because both would share the checkout.
+// Only a clean stop qualifies: a failed stop may have left tool subprocesses behind.
+async function waitForListener() {
+  const file = path.join(dataDir, 'jobs', request.waitFor, 'status.json');
+  const began = Date.now();
+  for (;;) {
+    const listener = readJSON(file, null);
+    if (listener?.status === 'stopped') return null;
+    if (listener && !ACTIVE.has(listener.status)) return `Listen ended as ${listener.status} instead of stopping cleanly.`;
+    if (!listener || Date.now() - listener.heartbeat > 12000) return 'Listen’s supervisor stopped responding.';
+    // The server sends stop right after starting this supervisor, so a listener still running did not get it.
+    if (listener.status === 'running' && Date.now() - began > 10000) return 'Listen did not accept the stop request.';
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+}
+control.listen(socket, async () => {
   fs.chmodSync(socket, 0o600);
+  if (request.note) log(`[deck] ${request.note}\n`);
+  if (request.waitFor) {
+    log('[deck] Waiting for Listen to stop before starting this command.\n');
+    const reason = await waitForListener();
+    if (reason) { log(`[deck] ${reason} This command did not run, and Listen will not restart. Inspect the Listen run, then start commands again from the card.\n`); return finish(1, null, { blocked: true }); }
+    log('[deck] Listen stopped.\n');
+    if (stopping) return finish(null, null);
+  }
   log(`[deck] spar ${request.args.join(' ')}\n[deck] ${request.cwd}\n\n`);
   child = spawn(request.binary, request.args, { cwd: request.cwd, env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   child.once('spawn', () => {
@@ -93,10 +116,10 @@ control.on('error', error => { log(`[deck] Supervisor error: ${error.message}\n`
 // Heartbeats stay independent of scans, including during timeouts and shutdown.
 const heartbeat = setInterval(() => save({}), 2000);
 const scans = setInterval(() => { if (child?.pid && !rootExited && !stopping) void monitor.poll(); }, 1000);
-function finish(code, signalName) {
+function finish(code, signalName, extra = {}) {
   if (finished) return;
   finished = true; clearInterval(heartbeat); clearInterval(scans); clearTimeout(killTimer);
-  save({ status: cleanupIncomplete ? 'failed' : stopping ? 'stopped' : code === 0 ? 'completed' : 'failed', cleanupIncomplete, exitCode: code, signal: signalName, endedAt: new Date().toISOString() });
+  save({ status: extra.blocked || cleanupIncomplete ? 'failed' : stopping ? 'stopped' : code === 0 ? 'completed' : 'failed', cleanupIncomplete, exitCode: code, signal: signalName, endedAt: new Date().toISOString(), ...extra });
   log(`\n[deck] ${state.status}${code != null ? ` (exit ${code})` : ''}\n`);
   control.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 500).unref();

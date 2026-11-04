@@ -60,19 +60,42 @@ export async function createDeck(options = {}) {
   function projectById(projectId) {
     const project = state.projects.find(p => p.id === projectId); if (!project) throw Object.assign(new Error('Project not found.'), { status: 404 }); return project;
   }
+  const conflict = message => Object.assign(new Error(message), { status: 409 });
+  const awaitingResume = projectId => state.jobs.some(j => j.projectId === projectId && j.resume?.status === 'pending');
+  // Called before any check that requires an idle project, so a command that has just finished
+  // hands the project back to its listener before anything else can claim it.
+  function requireIdle(project, message) {
+    resumeListeners(project.id);
+    if (awaitingResume(project.id)) throw conflict('Listen is waiting to restart when this project’s command finishes. Stop the command, or cancel the restart, first.');
+    if (message && activeJobs(project.id).length) throw conflict(message);
+  }
   function startJob(project, input) {
     resolveDirectory(root, project.path);
     const args = buildArgs(input.command, input);
-    // Spar commands share state and worktrees. Serializing a project avoids competing runs.
-    if (activeJobs(project.id).length) throw Object.assign(new Error('Stop this project’s active command before starting another.'), { status: 409 });
+    let resume;
+    if (input.pauseListener === true) {
+      requireIdle(project);
+      const active = activeJobs(project.id), listener = active[0];
+      if (input.command === 'listen') throw conflict('Listen is already running on this project.');
+      if (active.length !== 1 || listener.command !== 'listen' || listener.status !== 'running') throw conflict('Listen can be paused only while it is running. Refresh and try again.');
+      // A one-shot listener exits on its own. Restarting it would poll again.
+      if (listener.args.includes('--once')) throw conflict('A listener started with Poll once cannot be paused. Let it finish, then start the command.');
+      resume = { listenerId: listener.id, args: listener.args, status: 'pending' };
+    } else {
+      // Spar commands share state and worktrees. Serializing a project avoids competing runs.
+      requireIdle(project, 'Stop this project’s active command before starting another.');
+    }
     if (input.command === 'init' && input.flags?.update === true) {
       const config = readConfig(root, project);
       if (!config.exists) throw new Error('Initialize this project before updating its configuration.');
-      if (input.configRevision !== undefined && input.configRevision !== config.revision) throw Object.assign(new Error('spar.toml changed on disk. Reload the file before updating.'), { status: 409 });
+      if (input.configRevision !== undefined && input.configRevision !== config.revision) throw conflict('spar.toml changed on disk. Reload the file before updating.');
     }
-    const job = { id: id(), projectId: project.id, projectName: project.name, command: input.command, args, createdAt: new Date().toISOString() };
+    return launch(project, input.command, args, resume ? { record: { resume }, request: { waitFor: resume.listenerId } } : {});
+  }
+  function launch(project, command, args, { record = {}, request = {} } = {}) {
+    const job = { id: id(), projectId: project.id, projectName: project.name, command, args, createdAt: new Date().toISOString(), ...record };
     const folder = path.join(dataDir, 'jobs', job.id);
-    atomicJSON(path.join(folder, 'request.json'), { cwd: project.path, binary, args });
+    atomicJSON(path.join(folder, 'request.json'), { cwd: project.path, binary, args, ...request });
     state.jobs.push(job); save();
     const worker = spawn(process.execPath, [path.join(source, 'worker.mjs'), dataDir, job.id], { detached: true, stdio: 'ignore', env: process.env });
     worker.on('error', error => atomicJSON(path.join(folder, 'status.json'), { status: 'failed', error: error.message, endedAt: new Date().toISOString() }));
@@ -88,6 +111,40 @@ export async function createDeck(options = {}) {
       socket.once('error', () => reject(new Error('The run supervisor is unavailable. If Spar is still running, stop it in Activity Monitor before starting another run.')));
     });
   }
+  async function pauseListener(job) {
+    const listener = state.jobs.find(j => j.id === job.resume.listenerId);
+    try { fs.appendFileSync(path.join(dataDir, 'jobs', listener.id, 'output.log'), `\n[deck] Pausing Listen to run spar ${job.args.join(' ')}. Listen restarts with the same options when that command finishes.\n`, { mode: 0o600 }); } catch {}
+    // If the stop never arrives, the command's supervisor reports it and fails without running Spar.
+    await stopJob(listener).catch(() => {});
+  }
+  // Restarts listeners whose pausing command has finished. Only the web server writes deck.json,
+  // so this runs on a server timer and at startup rather than from a browser poll.
+  function resumeListeners(projectId) {
+    let changed = false;
+    for (const job of state.jobs) {
+      const resume = job.resume;
+      if (resume?.status !== 'pending' || (projectId && job.projectId !== projectId)) continue;
+      const view = jobView(job);
+      if (ACTIVE.has(view.status)) continue;
+      const project = state.projects.find(p => p.id === job.projectId);
+      // Commands are not replayed after a lost supervisor, and a blocked command means Listen did not stop cleanly.
+      if (view.status === 'interrupted' || view.blocked || !project) {
+        Object.assign(resume, { status: 'skipped', reason: view.blocked ? 'blocked' : view.status === 'interrupted' ? 'interrupted' : 'removed' });
+        changed = true; continue;
+      }
+      // A listener still shutting down after a stop during the wait keeps the project busy.
+      if (activeJobs(project.id).length) continue;
+      resume.status = 'started';
+      try {
+        resolveDirectory(root, project.path);
+        resume.jobId = launch(project, 'listen', resume.args, { request: { note: `Restarting Listen after spar ${job.args.join(' ')} ended as ${view.status}.` } }).id;
+      } catch (error) { Object.assign(resume, { status: 'failed', error: error.message }); }
+      changed = true;
+    }
+    if (changed) save();
+  }
+  function tick() { try { resumeListeners(); } catch (error) { console.error(`Could not restart a paused listener: ${error.message}`); } }
+  let resumeTimer;
   function reply(res, status, data) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); }
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -131,24 +188,34 @@ export async function createDeck(options = {}) {
         if (req.method === 'GET') return reply(res, 200, readConfig(root, project));
         // JSON escaping can expand a 64 KB document by up to six times.
         const input = await body(req, 6 * 64 * 1024 + 1024);
-        if (activeJobs(project.id).length) throw Object.assign(new Error('Stop this project’s active command before saving its configuration.'), { status: 409 });
+        requireIdle(project, 'Stop this project’s active command before saving its configuration.');
         return reply(res, 200, writeConfig(root, project, input));
       }
       const projectMatch = url.pathname.match(/^\/api\/projects\/([\w-]+)$/);
       if (req.method === 'DELETE' && projectMatch) {
         const project = projectById(projectMatch[1]);
-        if (activeJobs(project.id).length) throw Object.assign(new Error('Stop the active command before removing this card.'), { status: 409 });
+        requireIdle(project, 'Stop the active command before removing this card.');
         state.projects = state.projects.filter(p => p.id !== project.id); save(); return reply(res, 200, { ok: true });
       }
       if (req.method === 'POST' && url.pathname === '/api/jobs') {
-        const input = await body(req); return reply(res, 201, startJob(projectById(input.projectId), input));
+        const input = await body(req); const job = startJob(projectById(input.projectId), input);
+        if (job.resume) await pauseListener(job);
+        return reply(res, 201, job);
       }
-      const jobMatch = url.pathname.match(/^\/api\/jobs\/([\w-]+)\/(log|stop)$/);
+      const jobMatch = url.pathname.match(/^\/api\/jobs\/([\w-]+)\/(log|stop|cancel-resume)$/);
       if (jobMatch) {
         const job = state.jobs.find(j => j.id === jobMatch[1]);
         if (!job) return reply(res, 404, { error: 'Run not found.' });
         if (req.method === 'GET' && jobMatch[2] === 'log') return reply(res, 200, { job: jobView(job), output: tailFile(path.join(dataDir, 'jobs', job.id, 'output.log')) });
-        if (req.method === 'POST' && jobMatch[2] === 'stop') { await stopJob(job); return reply(res, 200, { ok: true }); }
+        if (req.method === 'POST' && jobMatch[2] === 'stop') {
+          // The config editor stops a pausing command to free the project, so the listener stays off.
+          if ((await body(req)).cancelResume === true && job.resume?.status === 'pending') { job.resume.status = 'cancelled'; save(); }
+          await stopJob(job); return reply(res, 200, { ok: true });
+        }
+        if (req.method === 'POST' && jobMatch[2] === 'cancel-resume') {
+          if (job.resume?.status !== 'pending') return reply(res, 409, { error: 'Listen is no longer waiting to restart.' });
+          job.resume.status = 'cancelled'; save(); return reply(res, 200, { ok: true });
+        }
       }
       const files = { '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'], '/favicon.svg': ['favicon.svg', 'image/svg+xml'] };
       if (req.method === 'GET' && files[url.pathname]) {
@@ -157,6 +224,9 @@ export async function createDeck(options = {}) {
       reply(res, 404, { error: 'Not found.' });
     } catch (error) { reply(res, error.status || 400, { error: error.message }); }
   });
+  // Restarts wait for the port, so a second Deck that fails to bind cannot launch a listener the running one never records.
+  server.on('listening', () => { tick(); resumeTimer = setInterval(tick, 1000); resumeTimer.unref(); });
+  server.on('close', () => clearInterval(resumeTimer));
   return { server, snapshot, dataDir };
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
