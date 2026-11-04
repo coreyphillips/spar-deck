@@ -153,12 +153,13 @@ async function refresh(force = false) {
 }
 function render() {
   const active = state.projects.filter(p => isActive(latest(p)));
+  const working = active.filter(p => latest(p).command !== 'listen');
   const attention = state.projects.filter(p => !p.available || !p.configured || ['failed', 'interrupted', 'unresponsive'].includes(latest(p)?.status));
   $('#project-count').textContent = state.projects.length; $('#history-count').textContent = state.jobs.length;
   $('#total-value').textContent = state.projects.length;
   $('#listening-value').textContent = active.filter(p => latest(p).command === 'listen').length;
-  $('#working-value').textContent = active.filter(p => latest(p).command !== 'listen').length;
-  $('#all-count').textContent = state.projects.length; $('#active-count').textContent = active.length; $('#attention-count').textContent = attention.length;
+  $('#working-value').textContent = working.length;
+  $('#all-count').textContent = state.projects.length; $('#active-count').textContent = active.length; $('#working-count').textContent = working.length; $('#attention-count').textContent = attention.length;
   $('#page-title').textContent = view === 'projects' ? 'Everything on deck.' : 'Every run, in one place.';
   $('#page-description').textContent = view === 'projects' ? 'Your projects. Your pace. Spar keeps things moving.' : 'Pick up the thread. See what ran, what finished, and what needs you.';
   $('#page-name').textContent = view === 'projects' ? 'Projects' : 'Run history';
@@ -169,7 +170,8 @@ function render() {
   $$('[data-view]').forEach(el => el.classList.toggle('selected', el.dataset.view === view));
   $$('[data-filter]').forEach(el => el.classList.toggle('active', el.dataset.filter === filter));
   const matches = p => `${p.name} ${p.path}`.toLowerCase().includes(query.toLowerCase());
-  const shown = state.projects.filter(p => matches(p) && (filter === 'all' || (filter === 'active' ? active : attention).includes(p)));
+  const filtered = filter === 'all' ? state.projects : { active, working, attention }[filter] || [];
+  const shown = filtered.filter(matches);
   const focused = document.activeElement?.closest('[data-project]');
   const focusProject = focused?.dataset.project, focusAction = focused?.dataset.action;
   $('#projects').innerHTML = shown.map(card).join('') + (filter === 'all' && !query && state.projects.length ? `<button class="add-card" data-action="add"><span class="add-symbol">${icon('plus')}</span><strong>Something else on your mind?</strong><span>Add another project to your deck</span></button>` : '');
@@ -333,7 +335,8 @@ function about() {
 document.addEventListener('click', event => {
   const close = event.target.closest('[data-close]'); if (close) closeDialog($(`#${close.dataset.close}`));
   const nav = event.target.closest('[data-view]'); if (nav) { view = nav.dataset.view; render(); }
-  const tab = event.target.closest('[data-filter]'); if (tab) { filter = tab.dataset.filter; render(); }
+  // On phones the tab row scrolls, so a chosen tab may be partly hidden.
+  const tab = event.target.closest('[data-filter]'); if (tab) { filter = tab.dataset.filter; render(); tab.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
   const folder = event.target.closest('[data-folder]'); if (folder) action(() => browse(folder.dataset.folder));
   const add = event.target.closest('[data-add-path]'); if (add) action(() => addProject(add.dataset.addPath));
   const job = event.target.closest('[data-job]'); if (job) action(() => openLogs(job.dataset.job));

@@ -19,6 +19,7 @@ Choose specific pull requests, preview a dry run, and adjust review options befo
 - Browse repositories under Documents, including nested project folders.
 - Add project cards, drag them into your preferred order, or use keyboard-accessible move buttons.
 - Start Listen and Review directly from a card.
+- Filter cards by All projects, Active, Working, or Needs attention. Active includes listeners. Working shows only projects running another command.
 - See how many follow-ups wait in a project's `.spar/followups.md`, counted the way `spar followup` counts them. The card shows nothing when the queue is empty. Click the count to open Follow up.
 - Edit each project's `spar.toml` with syntax checks and protection against stale saves.
 - Turn a feature request, bug report, or enhancement into an issue and PR with Code.
