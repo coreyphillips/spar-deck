@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { ACTIVE, atomicJSON, readJSON, socketPath } from './core.mjs';
+import { ACTIVE, atomicJSON, readJSON, socketPath, tailFile } from './core.mjs';
+import { classifyReport } from './outcome.mjs';
 import { descendants, signalVerified, createProcessMonitor } from './process-tree.mjs';
 
 // A separate supervisor owns each run, so browser and web-server lifetimes do not matter.
@@ -116,10 +117,20 @@ control.on('error', error => { log(`[deck] Supervisor error: ${error.message}\n`
 // Heartbeats stay independent of scans, including during timeouts and shutdown.
 const heartbeat = setInterval(() => save({}), 2000);
 const scans = setInterval(() => { if (child?.pid && !rootExited && !stopping) void monitor.poll(); }, 1000);
+function endStatus(code, signalName, blocked) {
+  if (blocked || cleanupIncomplete) return 'failed';
+  if (stopping) return 'stopped';
+  if (code === 0) return 'completed';
+  // Spar exits 1 for an escalation and for a real failure alike. Only its closing report tells them apart.
+  if (code === 1 && !signalName && rootExited) {
+    try { return classifyReport(tailFile(logFile)); } catch { return 'failed'; }
+  }
+  return 'failed';
+}
 function finish(code, signalName, extra = {}) {
   if (finished) return;
   finished = true; clearInterval(heartbeat); clearInterval(scans); clearTimeout(killTimer);
-  save({ status: extra.blocked || cleanupIncomplete ? 'failed' : stopping ? 'stopped' : code === 0 ? 'completed' : 'failed', cleanupIncomplete, exitCode: code, signal: signalName, endedAt: new Date().toISOString(), ...extra });
+  save({ status: endStatus(code, signalName, extra.blocked), cleanupIncomplete, exitCode: code, signal: signalName, endedAt: new Date().toISOString(), ...extra });
   log(`\n[deck] ${state.status}${code != null ? ` (exit ${code})` : ''}\n`);
   control.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 500).unref();
