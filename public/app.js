@@ -119,7 +119,9 @@ const latest = project => state.jobs.find(j => j.projectId === project.id);
 const isActive = job => job && activeStatuses.has(job.status);
 // Deck can stop a running listener for another command and start it again afterwards.
 const pausable = job => job?.command === 'listen' && job.status === 'running' && !job.args.includes('--once');
-const statusLabel = job => !job ? 'Ready' : job.status === 'starting' && job.resume ? 'Pausing Listen' : job.status === 'running' ? job.command === 'listen' ? 'Listening' : 'Working' : ({ completed: 'Completed', stopped: 'Stopped', starting: 'Starting', stopping: 'Stopping', failed: 'Failed', interrupted: 'Interrupted', unresponsive: 'Needs attention' }[job.status] || job.status);
+const statusLabel = job => !job ? 'Ready' : job.status === 'starting' && job.resume ? 'Pausing Listen' : job.status === 'running' ? job.command === 'listen' ? 'Listening' : 'Working' : ({ completed: 'Completed', stopped: 'Stopped', starting: 'Starting', stopping: 'Stopping', failed: 'Failed', escalated: 'Escalated', interrupted: 'Interrupted', unresponsive: 'Needs attention' }[job.status] || job.status);
+// Outcomes a person has to act on. The card keeps showing them instead of Ready.
+const needsAttention = job => ['failed', 'escalated', 'interrupted', 'unresponsive'].includes(job?.status);
 const time = value => new Date(value).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 function relative(value) {
   const seconds = Math.max(0, (Date.now() - Date.parse(value)) / 1000);
@@ -156,7 +158,7 @@ async function refresh(force = false) {
 function render() {
   const active = state.projects.filter(p => isActive(latest(p)));
   const working = active.filter(p => latest(p).command !== 'listen');
-  const attention = state.projects.filter(p => !p.available || !p.configured || ['failed', 'interrupted', 'unresponsive'].includes(latest(p)?.status));
+  const attention = state.projects.filter(p => !p.available || !p.configured || needsAttention(latest(p)));
   $('#project-count').textContent = state.projects.length; $('#history-count').textContent = state.jobs.length;
   $('#total-value').textContent = state.projects.length;
   $('#listening-value').textContent = active.filter(p => latest(p).command === 'listen').length;
@@ -195,8 +197,8 @@ function followupIndicator(project, actionable) {
 }
 function card(project) {
   const job = latest(project), running = isActive(job), busy = busyProjects.has(project.id);
-  const status = !project.available ? 'Unavailable' : running ? statusLabel(job) : !project.configured ? 'Setup needed' : ['failed', 'interrupted', 'unresponsive'].includes(job?.status) ? statusLabel(job) : 'Ready';
-  const statusClass = !project.available ? 'unavailable' : running ? job.command === 'listen' ? 'listening' : 'working' : ['failed', 'interrupted', 'unresponsive'].includes(job?.status) ? job.status : '';
+  const status = !project.available ? 'Unavailable' : running ? statusLabel(job) : !project.configured ? 'Setup needed' : needsAttention(job) ? statusLabel(job) : 'Ready';
+  const statusClass = !project.available ? 'unavailable' : running ? job.command === 'listen' ? 'listening' : 'working' : needsAttention(job) ? job.status : '';
   const disabled = !connected || !project.available || busy, canPause = pausable(job);
   const relativePath = project.path.startsWith(state.root) ? `${state.root.split('/').pop()}${project.path.slice(state.root.length)}` : project.path;
   const tone = [...project.name].reduce((n, c) => n + c.charCodeAt(0), 0) % 5;

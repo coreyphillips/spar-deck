@@ -26,6 +26,7 @@ Choose specific pull requests, preview a dry run, and adjust review options befo
 - Run check-in, triage, resume, brainstorm, follow-up, split, doctor, initialize, and clean with structured command options.
 - Choose issue or PR numbers, dry runs, limits, a lowest issue number, the base branch, the first agent, extra instructions, Resume's next reviewer, and other supported command flags.
 - Read live output and previous runs, including exit status and timestamps.
+- See a run where Spar escalated an item to you as **Escalated**, not Failed. The project stays under Needs attention until you decide. **Failed** means something went wrong, such as a crash, a failed write, a wave of work that stopped early, or an item that ended in `error`.
 - Keep runs alive when you close the browser or restart the dashboard server.
 - Save cards, layout, run history, and recent logs on your own computer.
 - Start the dashboard automatically at login with the included macOS service.
@@ -63,7 +64,7 @@ While a project listens, open its three-dot command button, or click its follow-
 
 1. Stops Listen the same way **Stop run** does. Any work Listen is doing is interrupted, since Deck cannot tell whether it is idle. Stopping can take about 21 seconds, and the card shows **Pausing Listen** meanwhile.
 2. Starts the command once Listen's run has ended as stopped. If Listen ends any other way, the command does not run, its run is marked failed with a `[deck]` line explaining why, and Listen stays off.
-3. Starts a new Listen run with exactly the same options when the command completes, fails, or is stopped. This happens once, with or without a browser open, and after a web-server restart.
+3. Starts a new Listen run with exactly the same options when the command completes, escalates, fails, or is stopped. This happens once, with or without a browser open, and after a web-server restart.
 
 While the command runs, the card says Listen will resume. Choose **Don't restart Listen** on the card to leave the project idle afterwards. **Stop run** in the config editor stops the command and also keeps Listen off, so you can save. Listen does not restart after an interrupted command, for example after a reboot. If the restart fails, the card shows why. Run history keeps all three runs, and each log notes why Listen stopped or started.
 

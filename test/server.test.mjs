@@ -447,3 +447,43 @@ test('a deck that cannot bind its port never restarts a paused listener', { time
   assert.deepEqual(fs.readdirSync(path.join(dataDir, 'jobs')), ['done']);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'deck.json'), 'utf8')).jobs[0].resume.status, 'pending');
 });
+
+test('a run that ends in a Spar escalation is recorded as escalated, and real failures stay failed', { timeout: 20000 }, async t => {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-escalated-')));
+  const root = path.join(temp, 'project'), dataDir = path.join(temp, 'data');
+  fs.mkdirSync(root); execFileSync('git', ['init', '-q', root]);
+  fs.writeFileSync(path.join(root, 'spar.toml'), '');
+  // The target number picks the report and how the fake exits. Writes are synchronous so a signal cannot drop them.
+  const fake = path.join(temp, 'fake-spar');
+  fs.writeFileSync(fake, `#!${process.execPath}
+const fs = require('node:fs');
+const target = process.argv[3];
+const rule = '='.repeat(60);
+const items = target === '2' ? ['#7     error      rounds=1', '       implementation failed'] : ['#1942  escalated  rounds=4 https://github.com/OWNER/REPO/pull/1', '       one point left after the closing pass'];
+fs.writeSync(1, ['working', '', rule, ...items, rule, '', 'spent: 2 agent call(s), 3m of model time', '', 'writes: 7 attempted, 7 succeeded, 0 failed', ''].join('\\n'));
+if (target === '4') process.kill(process.pid, 'SIGKILL');
+process.exit(target === '3' ? 2 : 1);
+`, { mode: 0o700 });
+  const deck = await createDeck({ root, dataDir, binary: fake });
+  t.after(async () => { deck.server.closeAllConnections(); await new Promise(resolve => deck.server.close(resolve)); fs.rmSync(temp, { recursive: true, force: true }); });
+  await new Promise(resolve => deck.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${deck.server.address().port}`;
+  const token = (await fetch(`${base}/api/state`).then(r => r.json())).token;
+  const post = (url, body) => fetch(`${base}${url}`, { method: 'POST', headers: { 'X-Deck-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+  const project = await post('/api/projects', { path: root });
+  const cases = [['1', 'escalated', 1, null], ['2', 'failed', 1, null], ['3', 'failed', 2, null], ['4', 'failed', null, 'SIGKILL']];
+  for (const [target, expected, exitCode, signal] of cases) {
+    const job = await post('/api/jobs', { projectId: project.id, command: 'run', targets: target });
+    // Under load the view can briefly read interrupted, so wait for the supervisor's final record.
+    const done = await until(async () => {
+      const view = (await deck.snapshot()).jobs.find(j => j.id === job.id);
+      return view.endedAt && view;
+    });
+    assert.equal(done.status, expected, `run ${target}`);
+    assert.equal(done.exitCode, exitCode, `run ${target}`); assert.equal(done.signal, signal, `run ${target}`);
+    const folder = path.join(dataDir, 'jobs', job.id);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(folder, 'status.json'), 'utf8')).status, expected);
+    const last = fs.readFileSync(path.join(folder, 'output.log'), 'utf8').trimEnd().split('\n').at(-1);
+    assert.equal(last, `[deck] ${expected}${exitCode == null ? '' : ` (exit ${exitCode})`}`);
+  }
+});
