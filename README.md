@@ -21,6 +21,7 @@ Choose specific pull requests, preview a dry run, and adjust review options befo
 - Start Listen and Review directly from a card.
 - Filter cards by All projects, Active, Working, or Needs attention. Active includes listeners. Working shows only projects running another command.
 - See how many follow-ups wait in a project's `.spar/followups.md`, counted the way `spar followup` counts them. The card shows nothing when the queue is empty. Click the count to open Follow up.
+- Click a card's folder path to open the project in Finder on macOS. Click its branch to open that branch on GitHub when the project's `origin` remote is on github.com.
 - Edit each project's `spar.toml` with syntax checks and protection against stale saves.
 - Turn a feature request, bug report, or enhancement into an issue and PR with Code.
 - Run check-in, triage, resume, brainstorm, follow-up, split, doctor, initialize, and clean with structured command options.

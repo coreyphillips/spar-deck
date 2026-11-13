@@ -36,3 +36,7 @@ button.config-state{border:0;background:var(--purple-soft);border-radius:5px;pad
 .resume-note.error{color:#a65d45;background:#fbefeb}
 .resume-note .text-button{font-size:10px;padding:0;text-decoration:underline}
 .dialog-footer .pause-notice{color:#86551e}
+
+/* The card path opens the folder in Finder. It keeps its text styling and gets the deck's focus ring. */
+.card-path{cursor:pointer}
+.card-path:focus-visible{outline:3px solid #b9aef1;outline-offset:3px}

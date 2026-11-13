@@ -487,3 +487,70 @@ process.exit(target === '3' ? 2 : 1);
     assert.equal(last, `[deck] ${expected}${exitCode == null ? '' : ` (exit ${exitCode})`}`);
   }
 });
+
+test('cards link branches on github.com, and reveal opens a project folder through the injected opener', { timeout: 20000 }, async t => {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-shortcuts-')));
+  const root = path.join(temp, 'Documents'), dataDir = path.join(temp, 'data'); fs.mkdirSync(root);
+  const fake = path.join(temp, 'fake-spar');
+  fs.writeFileSync(fake, `#!${process.execPath}\nif (process.argv[2] === '--version') process.exit(0);\nsetInterval(() => {}, 1000);\nprocess.on('SIGINT', () => process.exit(0));\n`, { mode: 0o700 });
+  const git = (folder, ...args) => execFileSync('git', ['-C', folder, ...args]);
+  const repos = {};
+  for (const name of ['ssh', 'https', 'local', 'gitlab', 'detached', 'moved']) { repos[name] = path.join(root, name); fs.mkdirSync(repos[name]); execFileSync('git', ['init', '-q', repos[name]]); }
+  git(repos.ssh, 'remote', 'add', 'origin', 'git@github.com:owner/repo.git'); git(repos.ssh, 'symbolic-ref', 'HEAD', 'refs/heads/feature/x#1');
+  git(repos.https, 'remote', 'add', 'origin', 'https://user:ghp_secret@github.com/owner/other.git'); git(repos.https, 'symbolic-ref', 'HEAD', 'refs/heads/main');
+  git(repos.gitlab, 'remote', 'add', 'origin', 'git@gitlab.com:owner/repo.git');
+  git(repos.detached, 'remote', 'add', 'origin', 'https://github.com/owner/detached');
+  git(repos.detached, '-c', 'user.name=Deck', '-c', 'user.email=deck@example.com', '-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '--allow-empty', '-m', 'start');
+  git(repos.detached, 'checkout', '-q', '--detach');
+  const opened = []; let openError;
+  const deck = await createDeck({ root, dataDir, binary: fake, openFolder: async directory => { opened.push(directory); if (openError) throw new Error(openError); } });
+  await new Promise(resolve => deck.server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${deck.server.address().port}`;
+  const token = (await fetch(`${base}/api/state`).then(r => r.json())).token;
+  const request = async (url, method = 'GET', body, headers = {}) => {
+    const response = await fetch(base + url, { method, headers: { 'X-Deck-Token': token, 'Content-Type': 'application/json', ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { status: response.status, data: await response.json() };
+  };
+  const jobs = async () => (await request('/api/state')).data.jobs;
+  t.after(async () => {
+    for (const job of await jobs()) if (['starting', 'running'].includes(job.status)) await request(`/api/jobs/${job.id}/stop`, 'POST', {}).catch(() => {});
+    await until(async () => !(await jobs()).some(j => ['starting', 'running', 'stopping'].includes(j.status))).catch(() => {});
+    deck.server.closeAllConnections(); await new Promise(resolve => deck.server.close(resolve)); fs.rmSync(temp, { recursive: true, force: true });
+  });
+  const ids = {};
+  for (const [name, folder] of Object.entries(repos)) ids[name] = (await request('/api/projects', 'POST', { path: folder })).data.id;
+
+  const state = (await request('/api/state')).data;
+  const card = name => state.projects.find(p => p.id === ids[name]);
+  assert.equal(card('ssh').branch, 'feature/x#1');
+  assert.equal(card('ssh').branchUrl, 'https://github.com/owner/repo/tree/feature/x%231');
+  assert.equal(card('https').branchUrl, 'https://github.com/owner/other/tree/main');
+  assert.equal(card('detached').branch, 'detached');
+  assert.equal(card('detached').branchUrl, 'https://github.com/owner/detached', 'a detached HEAD links to the repository');
+  for (const name of ['local', 'gitlab']) { assert.equal(card(name).available, true, name); assert.equal(card(name).branchUrl, null, name); }
+  assert(!JSON.stringify(state).includes('ghp_secret'), 'credentials in a remote stay out of the snapshot');
+
+  const reveal = (projectId, headers) => request(`/api/projects/${projectId}/reveal`, 'POST', {}, headers);
+  assert.equal((await reveal(ids.ssh, { 'X-Deck-Token': '' })).status, 403);
+  assert.equal((await request(`/api/projects/${ids.ssh}/reveal`)).status, 404, 'GET never opens a folder');
+  assert.equal((await reveal('not-a-project')).status, 404);
+  assert.equal((await request(`/api/projects/${ids.ssh}/reveal`, 'POST', { path: temp })).status, 200);
+  assert.deepEqual(opened, [repos.ssh], 'the opener gets the project folder, not a path from the request');
+
+  // Revealing works while the project runs a command.
+  const job = (await request('/api/jobs', 'POST', { projectId: ids.https, command: 'listen' })).data;
+  await until(async () => (await jobs()).find(j => j.id === job.id).status === 'running');
+  assert.equal((await reveal(ids.https)).status, 200);
+  assert.deepEqual(opened, [repos.ssh, repos.https]);
+
+  // A missing folder, or one that now leads outside the root, never reaches the opener.
+  fs.renameSync(repos.moved, path.join(temp, 'moved-away'));
+  fs.rmSync(repos.local, { recursive: true }); fs.symlinkSync(path.join(temp, 'moved-away'), repos.local);
+  for (const name of ['moved', 'local']) {
+    const { status, data } = await reveal(ids[name]);
+    assert.equal(status, 400, name); assert.match(data.error, new RegExp(`The folder for ${name} is unavailable`), name);
+  }
+  assert.equal(opened.length, 2);
+  openError = 'Finder is not responding.';
+  assert.deepEqual(await reveal(ids.gitlab), { status: 400, data: { error: 'Finder is not responding.' } });
+});
