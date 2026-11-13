@@ -11,14 +11,21 @@ import { ACTIVE, COMMANDS, defaultDataDir, atomicJSON, readJSON, resolveDirector
 import { processTable } from './process-tree.mjs';
 import { readConfig, writeConfig } from './project-config.mjs';
 import { readFollowupCount } from './followups.mjs';
+import { githubBranchUrl } from './remote.mjs';
 const execute = promisify(execFile);
 const source = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(source, '../public');
+async function openInFinder(directory) {
+  if (process.platform !== 'darwin') throw new Error('Opening a project folder works only on macOS, where Finder is available.');
+  try { await execute('open', [directory], { timeout: 10000 }); }
+  catch (error) { throw new Error(`Finder could not open this folder. ${error.stderr?.trim() || error.message}`); }
+}
 
 export async function createDeck(options = {}) {
   const dataDir = path.resolve(options.dataDir || defaultDataDir());
   const root = fs.realpathSync(options.root || process.env.SPAR_DECK_ROOT || path.join(os.homedir(), 'Documents'));
   const binary = options.binary || process.env.SPAR_BIN || 'spar';
+  const openFolder = options.openFolder || openInFinder;
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const stateFile = path.join(dataDir, 'deck.json');
   let state = readJSON(stateFile, { version: 1, projects: [], jobs: [] });
@@ -44,9 +51,14 @@ export async function createDeck(options = {}) {
   async function metadata(project) {
     try {
       resolveDirectory(root, project.path);
-      const result = await execute('git', ['-C', project.path, 'branch', '--show-current'], { timeout: 2000 });
-      return { ...project, branch: result.stdout.trim() || 'detached', configured: fs.existsSync(path.join(project.path, 'spar.toml')), available: true, followups: readFollowupCount(project.path) };
-    } catch { return { ...project, branch: '', configured: false, available: false, followups: 0 }; }
+      // A project without an origin is still available. It just has no GitHub link.
+      const [result, remote] = await Promise.all([
+        execute('git', ['-C', project.path, 'branch', '--show-current'], { timeout: 2000 }),
+        execute('git', ['-C', project.path, 'remote', 'get-url', 'origin'], { timeout: 2000 }).then(r => r.stdout, () => ''),
+      ]);
+      const branch = result.stdout.trim();
+      return { ...project, branch: branch || 'detached', branchUrl: githubBranchUrl(remote, branch), configured: fs.existsSync(path.join(project.path, 'spar.toml')), available: true, followups: readFollowupCount(project.path) };
+    } catch { return { ...project, branch: '', branchUrl: null, configured: false, available: false, followups: 0 }; }
   }
   async function snapshot() {
     return { token, root, version, commands: COMMANDS, projects: await Promise.all(state.projects.map(metadata)), jobs: allJobs().reverse(), dataDir };
@@ -190,6 +202,16 @@ export async function createDeck(options = {}) {
         const input = await body(req, 6 * 64 * 1024 + 1024);
         requireIdle(project, 'Stop this project’s active command before saving its configuration.');
         return reply(res, 200, writeConfig(root, project, input));
+      }
+      // POST only: GET skips the token check, so any page could otherwise open Finder windows.
+      const revealMatch = url.pathname.match(/^\/api\/projects\/([\w-]+)\/reveal$/);
+      if (revealMatch && req.method === 'POST') {
+        const project = projectById(revealMatch[1]);
+        let directory;
+        try { directory = resolveDirectory(root, project.path); }
+        catch { throw new Error(`The folder for ${project.name} is unavailable. It may have been moved or deleted.`); }
+        await openFolder(directory);
+        return reply(res, 200, { ok: true });
       }
       const projectMatch = url.pathname.match(/^\/api\/projects\/([\w-]+)$/);
       if (req.method === 'DELETE' && projectMatch) {
