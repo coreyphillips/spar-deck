@@ -180,6 +180,8 @@ The installer registers `local.spar-deck` as a LaunchAgent, starts it, and captu
 
 The service keeps the web server available while you are signed in and starts it again at login. You can close the browser and terminal. Bookmark the dashboard to return later.
 
+An open dashboard refreshes every 2 seconds while its tab is visible. A hidden tab stops refreshing and catches up as soon as you return to it. Paused listeners restart on the web server's own timer, so they do not need the page open. Each card's branch and GitHub link are read from Git again only after the repository's `HEAD` or config changes.
+
 To remove the login service:
 
 ```sh
@@ -197,7 +199,7 @@ Removal preserves your saved data and any active Spar runs. Stop your runs in th
 | Computer sleeps | Preserved | Paused by the OS until wake |
 | Log out or reboot | Preserved | End; restart manually after login |
 
-Commands are deliberately not replayed automatically after a reboot, since some can post comments, push code, or file issues. The same holds for a paused listener: if the command that paused it is interrupted, Listen stays off. A command that finishes while the web server is down restarts its paused listener when the server starts again. A lost supervisor is reported as interrupted. If its Spar process is still alive, the card needs attention and blocks another run until that process is stopped.
+Commands are deliberately not replayed automatically after a reboot, since some can post comments, push code, or file issues. The same holds for a paused listener: if the command that paused it is interrupted, Listen stays off. A command that finishes while the web server is down restarts its paused listener when the server starts again. A lost supervisor is reported as interrupted. If its Spar process is still alive, the card needs attention and blocks another run until that process is stopped. Deck looks for that process with one process scan per refresh, shared by all such runs. Once the process is gone, Deck remembers the run as interrupted and stops scanning for it until its `status.json` changes or the web server restarts.
 
 **Stop run** asks Spar to exit with SIGINT and allows up to 20 seconds for cleanup before forcing termination. Spar can create tool subprocesses in separate process groups, so the supervisor tracks descendants and checks their process identities before terminating them. A command stopped during a write should be inspected before retrying, as with Ctrl-C in a terminal. Unrelated Spar processes started outside the dashboard are not managed by the deck.
 
