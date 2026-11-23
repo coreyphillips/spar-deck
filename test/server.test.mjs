@@ -488,6 +488,67 @@ process.exit(target === '3' ? 2 : 1);
   }
 });
 
+test('stale runs are checked against the process table once, and a live Spar process blocks its project until it exits', { timeout: 20000 }, async t => {
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-stale-')));
+  const root = path.join(temp, 'projects'), dataDir = path.join(temp, 'data');
+  const fake = path.join(temp, 'fake-spar');
+  fs.writeFileSync(fake, `#!${process.execPath}\nprocess.exit(0);\n`, { mode: 0o700 });
+  const projects = ['alpha', 'beta'].map(name => {
+    const folder = path.join(root, name); fs.mkdirSync(folder, { recursive: true }); execFileSync('git', ['init', '-q', folder]);
+    fs.writeFileSync(path.join(folder, 'spar.toml'), '');
+    return { id: name, path: folder, name, addedAt: new Date().toISOString() };
+  });
+  const old = Date.now() - 60000, createdAt = new Date(old).toISOString();
+  const identity = pid => ({ pid, ppid: 1, started: 'Mon Nov 23 09:00:00 2026' });
+  const status = (jobId, data) => atomicJSON(path.join(dataDir, 'jobs', jobId, 'status.json'), data);
+  const runs = { dead1: 'alpha', dead2: 'alpha', dead3: 'alpha', lost: 'alpha', live: 'beta' };
+  for (const [jobId, projectId] of Object.entries(runs)) {
+    status(jobId, { status: 'running', heartbeat: old, ...(jobId === 'lost' ? {} : { identity: identity(jobId === 'live' ? 4242 : 5000 + Object.keys(runs).indexOf(jobId)) }) });
+  }
+  atomicJSON(path.join(dataDir, 'deck.json'), { version: 1, projects, jobs: Object.entries(runs).map(([jobId, projectId]) => ({ id: jobId, projectId, projectName: projectId, command: 'listen', args: ['listen'], createdAt })) });
+  let table = [identity(4242)], scans = 0, deck, base, token;
+  const launch = async () => {
+    deck = await createDeck({ root, dataDir, binary: fake, processTable: () => { scans++; return table; } });
+    await new Promise(resolve => deck.server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${deck.server.address().port}`;
+  };
+  const close = () => new Promise(resolve => { deck.server.closeAllConnections(); deck.server.close(resolve); });
+  const snapshot = async () => { const state = await fetch(`${base}/api/state`).then(r => r.json()); token = state.token; return state; };
+  const statuses = async () => Object.fromEntries((await snapshot()).jobs.map(j => [j.id, j.status]));
+  const start = projectId => fetch(`${base}/api/jobs`, { method: 'POST', headers: { 'X-Deck-Token': token, 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId, command: 'review' }) });
+  t.after(async () => { await close(); fs.rmSync(temp, { recursive: true, force: true }); });
+  await launch();
+
+  // One scan covers every stale run in the request.
+  assert.deepEqual(await statuses(), { dead1: 'interrupted', dead2: 'interrupted', dead3: 'interrupted', lost: 'interrupted', live: 'unresponsive' });
+  assert.equal(scans, 1);
+  // Only the live run needs another look.
+  await snapshot(); assert.equal(scans, 2);
+  assert.equal((await start('beta')).status, 409, 'a live Spar process blocks its project');
+  const review = await (await start('alpha')).json();
+  await until(async () => (await statuses())[review.id] === 'completed');
+
+  table = [];
+  assert.equal((await statuses()).live, 'interrupted', 'the run is interrupted once its Spar process exits');
+  scans = 0;
+  await snapshot(); await snapshot();
+  assert.equal(scans, 0, 'no scan once every stale run has a verdict');
+
+  // A supervisor that writes again is reported as written, and a new stale record is checked again.
+  status('dead1', { status: 'completed', heartbeat: Date.now(), endedAt: new Date().toISOString() });
+  status('dead2', { status: 'running', heartbeat: Date.now(), identity: identity(5001) });
+  assert.deepEqual(await statuses(), { [review.id]: 'completed', dead1: 'completed', dead2: 'running', dead3: 'interrupted', lost: 'interrupted', live: 'interrupted' });
+  assert.equal(scans, 0);
+  status('dead2', { status: 'running', heartbeat: old + 1000, identity: identity(5001) });
+  assert.equal((await statuses()).dead2, 'interrupted');
+  assert.equal(scans, 1);
+
+  // A restarted server checks each remaining stale run once more.
+  await close(); scans = 0; await launch();
+  await snapshot(); await snapshot();
+  assert.equal(scans, 1);
+});
+
 test('cards link branches on github.com, and reveal opens a project folder through the injected opener', { timeout: 20000 }, async t => {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'deck-shortcuts-')));
   const root = path.join(temp, 'Documents'), dataDir = path.join(temp, 'data'); fs.mkdirSync(root);
@@ -529,6 +590,31 @@ test('cards link branches on github.com, and reveal opens a project folder throu
   assert.equal(card('detached').branchUrl, 'https://github.com/owner/detached', 'a detached HEAD links to the repository');
   for (const name of ['local', 'gitlab']) { assert.equal(card(name).available, true, name); assert.equal(card(name).branchUrl, null, name); }
   assert(!JSON.stringify(state).includes('ghp_secret'), 'credentials in a remote stay out of the snapshot');
+
+  // Repeated polls reuse branch links, so they still work with git unavailable.
+  const searchPath = process.env.PATH;
+  fs.mkdirSync(path.join(temp, 'no-git'));
+  process.env.PATH = path.join(temp, 'no-git');
+  let cached;
+  try { cached = (await request('/api/state')).data; } finally { process.env.PATH = searchPath; }
+  assert.deepEqual(cached.projects, state.projects);
+  // A branch switch or a new origin shows on the next poll.
+  git(repos.https, 'checkout', '-q', '-b', 'feature/next');
+  git(repos.local, 'remote', 'add', 'origin', 'https://github.com/owner/local.git');
+  let next = (await request('/api/state')).data;
+  const nextCard = name => next.projects.find(p => p.id === ids[name]);
+  assert.equal(nextCard('https').branchUrl, 'https://github.com/owner/other/tree/feature/next');
+  assert.equal(nextCard('local').branchUrl, `https://github.com/owner/local/tree/${card('local').branch}`);
+  // In a linked worktree, HEAD is the worktree's own and the origin comes from the shared config.
+  repos.worktree = path.join(root, 'worktree');
+  git(repos.detached, 'worktree', 'add', '-q', '-b', 'wt-one', repos.worktree);
+  ids.worktree = (await request('/api/projects', 'POST', { path: repos.worktree })).data.id;
+  next = (await request('/api/state')).data;
+  assert.equal(nextCard('worktree').branchUrl, 'https://github.com/owner/detached/tree/wt-one');
+  git(repos.worktree, 'checkout', '-q', '-b', 'wt-two');
+  git(repos.detached, 'remote', 'set-url', 'origin', 'https://github.com/owner/renamed');
+  next = (await request('/api/state')).data;
+  assert.equal(nextCard('worktree').branchUrl, 'https://github.com/owner/renamed/tree/wt-two');
 
   const reveal = (projectId, headers) => request(`/api/projects/${projectId}/reveal`, 'POST', {}, headers);
   assert.equal((await reveal(ids.ssh, { 'X-Deck-Token': '' })).status, 403);

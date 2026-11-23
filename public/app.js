@@ -442,4 +442,12 @@ $('#projects').addEventListener('drop', event => {
   }
 });
 $('#projects').addEventListener('dragend', () => { draggedId = null; $$('.dragging,.drop-target').forEach(el => el.classList.remove('dragging', 'drop-target')); });
-refresh(); setInterval(refresh, 2000);
+// A hidden tab does not poll. Paused listeners restart on a server timer, so nothing waits on this page.
+let poller;
+function poll() {
+  clearInterval(poller);
+  if (document.hidden) return;
+  refresh(); poller = setInterval(refresh, 2000);
+}
+document.addEventListener('visibilitychange', poll);
+poll();

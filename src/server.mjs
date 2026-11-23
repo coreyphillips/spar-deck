@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ACTIVE, COMMANDS, defaultDataDir, atomicJSON, readJSON, resolveDirectory, buildArgs, id, socketPath, tailFile } from './core.mjs';
-import { processTable } from './process-tree.mjs';
+import { processTable, processTableAsync } from './process-tree.mjs';
 import { readConfig, writeConfig } from './project-config.mjs';
 import { readFollowupCount } from './followups.mjs';
 import { githubBranchUrl } from './remote.mjs';
@@ -34,34 +34,87 @@ export async function createDeck(options = {}) {
   const save = () => atomicJSON(stateFile, state);
   let version = 'Unavailable';
   try { version = (await execute(binary, ['--version'], { timeout: 4000 })).stdout.trim(); } catch {}
-  function jobView(job) {
-    const status = readJSON(path.join(dataDir, 'jobs', job.id, 'status.json'), { status: 'starting', heartbeat: Date.parse(job.createdAt) });
-    if (ACTIVE.has(status.status) && Date.now() - status.heartbeat > 12000) {
-      let live = false;
-      if (status.identity) {
-        try { live = processTable().some(p => p.pid === status.identity.pid && p.started === status.identity.started); }
-        catch { live = true; }
-      }
+  // Tests inject a synchronous reader, which also serves the asynchronous path.
+  const readTable = options.processTable || processTable;
+  const readTableAsync = options.processTable || processTableAsync;
+  // Stale runs found interrupted, with the status.json text they were judged on. Only the
+  // supervisor writes that file, so while the text is unchanged the verdict still holds.
+  const interrupted = new Map();
+  function readStatus(job) {
+    let text;
+    try { text = fs.readFileSync(path.join(dataDir, 'jobs', job.id, 'status.json'), 'utf8'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const status = text === undefined ? { status: 'starting', heartbeat: Date.parse(job.createdAt) } : JSON.parse(text);
+    const stale = ACTIVE.has(status.status) && Date.now() - status.heartbeat > 12000;
+    // A run without an identity never started Spar, so there is no process to look for.
+    return { job, status, text, stale, check: stale && !!status.identity && interrupted.get(job.id) !== text };
+  }
+  // A null table means the scan failed. The run then counts as live and keeps blocking its project.
+  function settle({ job, status, text, stale, check }, table) {
+    if (stale) {
+      const live = check && (!table || table.some(p => p.pid === status.identity.pid && p.started === status.identity.started));
+      if (check && !live) interrupted.set(job.id, text);
       status.status = live ? 'unresponsive' : 'interrupted';
     }
     return { ...job, ...status };
   }
-  const allJobs = () => state.jobs.map(jobView);
-  const activeJobs = projectId => allJobs().filter(j => j.projectId === projectId && ACTIVE.has(j.status));
+  // Each call scans the process table at most once, and only when a stale run has no verdict yet.
+  function views(jobs) {
+    const records = jobs.map(readStatus);
+    let table;
+    if (records.some(r => r.check)) { try { table = readTable(); } catch { table = null; } }
+    return records.map(r => settle(r, table));
+  }
+  async function viewsAsync(jobs) {
+    const records = jobs.map(readStatus);
+    let table;
+    if (records.some(r => r.check)) { try { table = await readTableAsync(); } catch { table = null; } }
+    return records.map(r => settle(r, table));
+  }
+  const jobView = job => views([job])[0];
+  const activeJobs = projectId => views(state.jobs.filter(j => j.projectId === projectId)).filter(j => ACTIVE.has(j.status));
+  // Branch links per project, reused until a file that `branch --show-current` or
+  // `remote get-url origin` reads changes.
+  const links = new Map();
+  function statKey(file) {
+    try { const s = fs.statSync(file, { bigint: true }); return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`; }
+    catch { return '-'; }
+  }
+  // In a linked worktree, .git is a file naming the worktree's own git directory, and config
+  // lives in the shared one. Repositories using reftable keep HEAD under reftable/.
+  function gitKey(directory) {
+    try {
+      let gitDir = path.join(directory, '.git');
+      if (fs.statSync(gitDir).isFile()) gitDir = path.resolve(directory, fs.readFileSync(gitDir, 'utf8').match(/^gitdir: (.+)$/m)[1].trim());
+      let common = gitDir;
+      try { common = path.resolve(gitDir, fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim()); } catch {}
+      const files = [path.join(gitDir, 'HEAD'), path.join(gitDir, 'config.worktree'), path.join(gitDir, 'reftable', 'tables.list'), path.join(common, 'config')];
+      return [gitDir, ...files.map(statKey)].join('|');
+    } catch { return null; }
+  }
+  function branchLink(directory) {
+    const key = gitKey(directory), cached = links.get(directory);
+    if (key && cached?.key === key) return cached.link;
+    // A project without an origin is still available. It just has no GitHub link.
+    const link = Promise.all([
+      execute('git', ['-C', directory, 'branch', '--show-current'], { timeout: 2000 }).then(r => r.stdout.trim()),
+      execute('git', ['-C', directory, 'remote', 'get-url', 'origin'], { timeout: 2000 }).then(r => r.stdout, () => ''),
+    ]).then(([branch, remote]) => ({ branch: branch || 'detached', branchUrl: githubBranchUrl(remote, branch) }));
+    if (key) {
+      links.set(directory, { key, link });
+      link.catch(() => { if (links.get(directory)?.link === link) links.delete(directory); });
+    }
+    return link;
+  }
   async function metadata(project) {
     try {
       resolveDirectory(root, project.path);
-      // A project without an origin is still available. It just has no GitHub link.
-      const [result, remote] = await Promise.all([
-        execute('git', ['-C', project.path, 'branch', '--show-current'], { timeout: 2000 }),
-        execute('git', ['-C', project.path, 'remote', 'get-url', 'origin'], { timeout: 2000 }).then(r => r.stdout, () => ''),
-      ]);
-      const branch = result.stdout.trim();
-      return { ...project, branch: branch || 'detached', branchUrl: githubBranchUrl(remote, branch), configured: fs.existsSync(path.join(project.path, 'spar.toml')), available: true, followups: readFollowupCount(project.path) };
+      return { ...project, ...await branchLink(project.path), configured: fs.existsSync(path.join(project.path, 'spar.toml')), available: true, followups: readFollowupCount(project.path) };
     } catch { return { ...project, branch: '', branchUrl: null, configured: false, available: false, followups: 0 }; }
   }
   async function snapshot() {
-    return { token, root, version, commands: COMMANDS, projects: await Promise.all(state.projects.map(metadata)), jobs: allJobs().reverse(), dataDir };
+    const [projects, jobs] = await Promise.all([Promise.all(state.projects.map(metadata)), viewsAsync(state.jobs)]);
+    return { token, root, version, commands: COMMANDS, projects, jobs: jobs.reverse(), dataDir };
   }
   async function body(req, limit = 20000) {
     const buffers = []; let length = 0;
@@ -114,7 +167,7 @@ export async function createDeck(options = {}) {
     worker.unref(); return job;
   }
   async function stopJob(job) {
-    if (!ACTIVE.has(jobView(job).status)) return;
+    if (!ACTIVE.has((await viewsAsync([job]))[0].status)) return;
     await new Promise((resolve, reject) => {
       const socket = net.createConnection(socketPath(dataDir, job.id));
       socket.setTimeout(3000, () => socket.destroy(new Error('Worker did not respond.')));
@@ -228,7 +281,7 @@ export async function createDeck(options = {}) {
       if (jobMatch) {
         const job = state.jobs.find(j => j.id === jobMatch[1]);
         if (!job) return reply(res, 404, { error: 'Run not found.' });
-        if (req.method === 'GET' && jobMatch[2] === 'log') return reply(res, 200, { job: jobView(job), output: tailFile(path.join(dataDir, 'jobs', job.id, 'output.log')) });
+        if (req.method === 'GET' && jobMatch[2] === 'log') return reply(res, 200, { job: (await viewsAsync([job]))[0], output: tailFile(path.join(dataDir, 'jobs', job.id, 'output.log')) });
         if (req.method === 'POST' && jobMatch[2] === 'stop') {
           // The config editor stops a pausing command to free the project, so the listener stays off.
           if ((await body(req)).cancelResume === true && job.resume?.status === 'pending') { job.resume.status = 'cancelled'; save(); }
